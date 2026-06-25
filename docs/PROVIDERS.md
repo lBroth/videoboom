@@ -7,15 +7,24 @@ Settings** — naming models here and in the UI is fine (this is BYOK, not a hos
 | Stage | Provider | Default model (env) | Notes |
 |------|----------|---------------------|-------|
 | Transcription / alignment | **Replicate** | WhisperX (`REPLICATE_API_TOKEN`) | forced-aligned word timestamps → vocal-locked editing |
+| Transcription (fallback) | **Groq** | `whisper-large-v3-turbo` (`GROQ_API_KEY`, `VB_STT_MODEL`) | used only if Replicate is unset/unavailable; cross-attention timing (less precise) |
 | Story bible | OpenRouter | `anthropic/claude-sonnet-4.6` (`VB_STORY_MODEL`) | |
 | Shot list / LLM | OpenRouter | `google/gemini-3.5-flash` (`VB_LLM_MODEL`) | structured output |
 | Keyframes | OpenRouter | `google/gemini-3-pro-image` (`VB_KEYFRAME_MODEL`) | identity from cast refs; GPT image needs `input_fidelity:high` |
 | Video clips | OpenRouter | `kwaivgi/kling-v3.0-std` / `-pro` (`VB_OR_VIDEO_MODEL`) | first+last-frame morph; std=Fast, pro=HD |
 | Image moderation | OpenRouter (vision) | `google/gemini-3.5-flash` (`VB_MODERATION_MODEL`) | SAFE/UNSAFE on a downscaled upload; fail-open |
 
-**Keys**: the user pastes an **OpenRouter** key (required) and a **Replicate** token (for accurate lyric
-timing) in Settings. They are encrypted via the OS keychain (`safeStorage`) and passed to the in-process
-render engine as config per operation (`src/engine/config.ts`) — never logged, never in git.
+**Keys** (entered in Settings, encrypted via the OS keychain `safeStorage`, passed to the in-process
+engine as config per op in `src/engine/config.ts` — never logged, never in git):
+
+| Key | env | Needed |
+|-----|-----|--------|
+| OpenRouter | `VB_OPENROUTER_API_KEY` | **required** (LLM, keyframes, video, moderation) |
+| Replicate | `REPLICATE_API_TOKEN` | recommended (accurate forced-aligned timing) |
+| Groq | `GROQ_API_KEY` | optional transcription fallback |
+| fal | `FAL_KEY` | reserved (future fal.ai providers) — unused today |
+
+Transcription needs **Replicate or Groq** (OpenRouter can't transcribe); everything else is OpenRouter.
 
 **Cost**: OpenRouter returns real `usage.cost` (we send `usage:{include:true}`) → cents. The app shows
 that **at-cost** total (no margin, no wallet). The user pays the providers directly.

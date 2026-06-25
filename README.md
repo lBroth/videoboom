@@ -59,8 +59,17 @@ song ─▶ transcribe (forced-aligned) ─▶ story from the lyrics ─▶ shot
 npm install
 npm run dev
 ```
-Open **Settings**, paste an **OpenRouter** key (required) and a **Replicate** token (for accurate lyric
-timing), then **Create** a video. Keys are encrypted with your OS keychain and never leave the machine.
+In **Settings**, add your keys, then **Create** a video:
+
+| Key | Needed | Used for |
+|-----|--------|----------|
+| **OpenRouter** (`VB_OPENROUTER_API_KEY`) | **required** | story + shot list (LLM), keyframes, image-to-video, moderation |
+| **Replicate** (`REPLICATE_API_TOKEN`) | recommended | accurate forced-aligned lyric timing (WhisperX) |
+| **Groq** (`GROQ_API_KEY`) | optional | transcription fallback if Replicate isn't set |
+
+You need at least **OpenRouter** plus **one of Replicate / Groq** (something has to read the lyrics).
+Replicate is recommended — forced alignment locks scenes to the singing far better. Keys are encrypted
+with your OS keychain and never leave the machine.
 
 ## Packaged builds (no install for end users)
 `npm run dist` bundles ffmpeg into a native installer for the OS you run it on. The render engine is pure
