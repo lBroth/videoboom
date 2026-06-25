@@ -1,0 +1,35 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# builds (electron main bundle + renderer + packaged installers)
+dist/
+build/
+renderer-dist/
+release/
+*.tsbuildinfo
+
+# python
+__pycache__/
+*.pyc
+sidecar/build/
+sidecar/dist/
+
+# bundled sidecar (built per-OS by scripts/build-sidecar.sh)
+resources/sidecar
+
+# local app data (project store, model weights, cache)
+~Videoboom/
+/.videoboom-local/
+# local render store used for testing (audio, characters, generated video — not for the repo)
+.vbdata-test/
+
+# env / editor / os — real env files may hold keys; nothing tracked
+.env
+.env.*
+.DS_Store
+.vscode/
+.idea/
+
+# encrypted key store (lives in userData at runtime; never commit if it lands in-tree)
+keys.json

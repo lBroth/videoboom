@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Videoboom — turn a song into a music video, on your machine</title>
+<meta name="description" content="Open-source, bring-your-own-key desktop app that turns a song into a complete AI music video. Your keys, your machine, at cost. Windows, macOS, Linux." />
+<link rel="icon" href="icon.png" />
+<meta property="og:title" content="Videoboom" />
+<meta property="og:description" content="Turn a song into a music video — on your machine, with your own API keys. Open-source, BYOK." />
+<meta property="og:image" content="icon.png" />
+<style>
+  :root{
+    --bg:#0b0d12; --bg2:#0e1018; --card:#14171f; --line:#222634;
+    --ink:#eef1f8; --mut:#9aa3b8; --mut2:#6b7385;
+    --g1:#7c4dff; --g2:#b14dff; --g3:#ff4db8;
+    --grad:linear-gradient(120deg,var(--g1),var(--g2) 45%,var(--g3));
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;background:var(--bg);color:var(--ink);
+    font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;overflow-x:hidden;
+  }
+  a{color:inherit}
+  .wrap{max-width:1040px;margin:0 auto;padding:0 24px}
+  .glow{position:fixed;inset:0;z-index:0;pointer-events:none;
+    background:
+      radial-gradient(600px 400px at 12% -5%,rgba(124,77,255,.22),transparent 60%),
+      radial-gradient(620px 420px at 92% 8%,rgba(255,77,184,.18),transparent 60%);}
+  header,main,footer{position:relative;z-index:1}
+
+  /* nav */
+  nav{display:flex;align-items:center;justify-content:space-between;padding:22px 24px;max-width:1040px;margin:0 auto}
+  .brand{display:flex;align-items:center;gap:12px;font-weight:700;letter-spacing:-.02em}
+  .brand img{width:34px;height:34px;border-radius:9px;box-shadow:0 6px 24px rgba(177,77,255,.35)}
+  .navlinks{display:flex;gap:22px;align-items:center;color:var(--mut);font-size:14px}
+  .navlinks a{text-decoration:none}.navlinks a:hover{color:var(--ink)}
+  .btn{display:inline-flex;align-items:center;gap:9px;border-radius:11px;padding:11px 18px;
+    font-weight:600;text-decoration:none;border:1px solid transparent;transition:.18s transform,.18s box-shadow}
+  .btn:hover{transform:translateY(-1px)}
+  .btn-grad{background:var(--grad);color:#fff;box-shadow:0 10px 30px rgba(177,77,255,.35)}
+  .btn-ghost{border-color:var(--line);color:var(--ink);background:rgba(255,255,255,.02)}
+
+  /* hero */
+  .hero{text-align:center;padding:70px 0 40px}
+  .pill{display:inline-flex;gap:8px;align-items:center;font-size:13px;color:var(--mut);
+    border:1px solid var(--line);border-radius:999px;padding:6px 14px;background:rgba(255,255,255,.02)}
+  .pill b{color:#cdb4ff;font-weight:600}
+  h1{font-size:clamp(34px,6vw,60px);line-height:1.05;letter-spacing:-.03em;margin:22px 0 0;font-weight:800}
+  h1 .grad{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .sub{color:var(--mut);font-size:clamp(16px,2.2vw,20px);max-width:680px;margin:18px auto 0}
+  .cta{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;margin-top:30px}
+  .os{margin-top:16px;color:var(--mut2);font-size:13px}
+
+  /* pipeline */
+  .pipe{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;align-items:center;margin:46px auto 0;max-width:920px}
+  .node{border:1px solid var(--line);background:var(--card);border-radius:10px;padding:9px 13px;font-size:13.5px;color:#dfe4f2;white-space:nowrap}
+  .node.k{border-color:rgba(177,77,255,.4);box-shadow:0 0 0 1px rgba(177,77,255,.12) inset}
+  .arrow{color:var(--mut2)}
+
+  /* sections */
+  section{padding:64px 0}
+  .eyebrow{color:#cdb4ff;font-weight:600;font-size:13px;letter-spacing:.08em;text-transform:uppercase}
+  h2{font-size:clamp(26px,4vw,36px);letter-spacing:-.02em;margin:10px 0 8px;font-weight:800}
+  .lead{color:var(--mut);max-width:640px}
+
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:34px}
+  @media(max-width:820px){.grid{grid-template-columns:1fr}}
+  .card{border:1px solid var(--line);background:linear-gradient(180deg,var(--card),var(--bg2));border-radius:16px;padding:22px}
+  .card .ic{width:38px;height:38px;border-radius:10px;display:grid;place-items:center;font-size:19px;
+    background:rgba(177,77,255,.12);border:1px solid rgba(177,77,255,.25);margin-bottom:14px}
+  .card h3{margin:0 0 6px;font-size:17px}
+  .card p{margin:0;color:var(--mut);font-size:14.5px}
+
+  /* byok band */
+  .band{border:1px solid var(--line);border-radius:20px;padding:34px;background:
+    radial-gradient(700px 300px at 100% 0,rgba(255,77,184,.10),transparent 60%),
+    linear-gradient(180deg,var(--card),var(--bg2));margin-top:8px}
+  .band .row{display:grid;grid-template-columns:1.2fr 1fr;gap:30px;align-items:center}
+  @media(max-width:820px){.band .row{grid-template-columns:1fr}}
+  .stat{font-size:13px;color:var(--mut)}
+  .stat b{display:block;font-size:30px;color:var(--ink);font-weight:800;letter-spacing:-.02em;background:var(--grad);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+  .stats{display:flex;gap:26px;flex-wrap:wrap}
+
+  /* steps */
+  ol.steps{counter-reset:s;list-style:none;padding:0;margin:34px 0 0;display:grid;gap:14px}
+  ol.steps li{position:relative;padding:16px 18px 16px 58px;border:1px solid var(--line);border-radius:13px;background:var(--card)}
+  ol.steps li:before{counter-increment:s;content:counter(s);position:absolute;left:16px;top:14px;
+    width:28px;height:28px;border-radius:8px;display:grid;place-items:center;font-weight:700;font-size:14px;
+    background:var(--grad);color:#fff}
+  ol.steps b{font-weight:600}
+  ol.steps span{color:var(--mut)}
+
+  footer{border-top:1px solid var(--line);padding:40px 0;color:var(--mut2);font-size:14px;margin-top:40px}
+  footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:center}
+  footer a{color:var(--mut)}footer a:hover{color:var(--ink)}
+  .note{font-size:12.5px;color:var(--mut2);margin-top:8px}
+</style>
+</head>
+<body>
+<div class="glow"></div>
+
+<header>
+  <nav>
+    <div class="brand"><img src="icon.png" alt="Videoboom" /> Videoboom</div>
+    <div class="navlinks">
+      <a href="#features">Features</a>
+      <a href="#how">How it works</a>
+      <a href="https://github.com/lBroth/videoboom">GitHub</a>
+      <a class="btn btn-grad" href="https://github.com/lBroth/videoboom/releases/latest">Download</a>
+    </div>
+  </nav>
+</header>
+
+<main>
+  <div class="wrap hero">
+    <span class="pill">⭐ Open-source · <b>bring your own key</b> · no accounts</span>
+    <h1>Turn a song into a<br><span class="grad">complete music video</span></h1>
+    <p class="sub">A desktop app that writes a story from your lyrics, designs the shots, generates the
+      keyframes, animates every scene, and cuts it to the beat — all on your machine, paid at cost with
+      your own API keys.</p>
+    <div class="cta">
+      <a class="btn btn-grad" href="https://github.com/lBroth/videoboom/releases/latest">↓ Download for your OS</a>
+      <a class="btn btn-ghost" href="https://github.com/lBroth/videoboom">★ Star on GitHub</a>
+    </div>
+    <div class="os">Windows · macOS · Linux — free &amp; open-source (Apache-2.0)</div>
+
+    <div class="pipe" aria-label="pipeline">
+      <span class="node">🎵 song</span><span class="arrow">→</span>
+      <span class="node">transcribe</span><span class="arrow">→</span>
+      <span class="node">story from lyrics</span><span class="arrow">→</span>
+      <span class="node">shot list</span><span class="arrow">→</span>
+      <span class="node k">keyframes · your cast</span><span class="arrow">→</span>
+      <span class="node">per-scene video</span><span class="arrow">→</span>
+      <span class="node">assemble</span><span class="arrow">→</span>
+      <span class="node">🎬 MP4</span>
+    </div>
+  </div>
+
+  <section id="features" class="wrap">
+    <div class="eyebrow">What it does</div>
+    <h2>A real music video, from the actual song</h2>
+    <p class="lead">Not generic AI filler — a narrative that tracks your lyrics, locked to the singing.</p>
+    <div class="grid">
+      <div class="card"><div class="ic">📝</div><h3>Story from the lyrics</h3><p>The video tells the song’s own story — a coherent arc built from the real sung words, in order.</p></div>
+      <div class="card"><div class="ic">🎯</div><h3>Vocal-aligned editing</h3><p>Forced-aligned transcription + a frame-grid retime, so every cut locks to the singing with no drift.</p></div>
+      <div class="card"><div class="ic">🎭</div><h3>Reusable cast</h3><p>A photo and/or a description becomes a consistent character, kept recognizable across every scene.</p></div>
+      <div class="card"><div class="ic">🔁</div><h3>Per-scene refresh</h3><p>Don’t like one shot? Re-roll a single scene without touching the rest of the cut.</p></div>
+      <div class="card"><div class="ic">⚡</div><h3>Preview first</h3><p>Render the opening ~25% cheaply, watch it, then continue to the full song.</p></div>
+      <div class="card"><div class="ic">🎚️</div><h3>Your models</h3><p>Swap the LLM / image / video models in Settings — pick a cheaper engine whenever you want.</p></div>
+    </div>
+  </section>
+
+  <section class="wrap">
+    <div class="band">
+      <div class="row">
+        <div>
+          <div class="eyebrow">Bring your own key</div>
+          <h2>No subscription. No markup.</h2>
+          <p class="lead">Cloud video generation genuinely costs ~€25–30 of provider cost per finished
+            minute. A hosted service has to mark that up. Videoboom removes the middleman: paste your own
+            OpenRouter / Replicate keys, the app calls those providers directly, and you see exactly what
+            each render costs. Keys are encrypted with your OS keychain and never leave your machine.</p>
+        </div>
+        <div class="stats">
+          <div class="stat"><b>0%</b> markup — paid at cost</div>
+          <div class="stat"><b>0</b> accounts or servers</div>
+          <div class="stat"><b>100%</b> local — your files stay put</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="how" class="wrap">
+    <div class="eyebrow">How it works</div>
+    <h2>Drop a song. Get a video.</h2>
+    <ol class="steps">
+      <li><b>Add your keys.</b> <span>In Settings, paste an OpenRouter key (required) and a Replicate token (for accurate lyric timing). Encrypted via your OS keychain.</span></li>
+      <li><b>Drop in a song</b> <span>and optionally build a cast — reusable characters from a photo or a description.</span></li>
+      <li><b>It writes &amp; renders.</b> <span>Story from the lyrics → shot list → identity-preserving keyframes → per-scene clips → beat-cut assemble.</span></li>
+      <li><b>Preview, refine, export.</b> <span>Watch the preview, re-roll any scene, then render the full song to an MP4 (tagged as AI-generated).</span></li>
+    </ol>
+  </section>
+
+  <section class="wrap" style="text-align:center;padding-top:24px">
+    <h2>Ready when you are</h2>
+    <p class="lead" style="margin:8px auto 0">Free, open-source, runs on your machine.</p>
+    <div class="cta">
+      <a class="btn btn-grad" href="https://github.com/lBroth/videoboom/releases/latest">↓ Download Videoboom</a>
+      <a class="btn btn-ghost" href="https://github.com/lBroth/videoboom">View the source</a>
+    </div>
+    <div class="note">Builds are unsigned — on first launch, right-click → Open (macOS) or “More info → Run anyway” (Windows).</div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="brand"><img src="icon.png" alt="" style="width:24px;height:24px" /> Videoboom</div>
+    <div>
+      <a href="https://github.com/lBroth/videoboom">GitHub</a> ·
+      <a href="https://github.com/lBroth/videoboom/releases/latest">Releases</a> ·
+      <a href="https://github.com/lBroth/videoboom/blob/main/LICENSE">Apache-2.0</a>
+    </div>
+  </div>
+  <div class="wrap"><div class="note">Videoboom orchestrates third-party model APIs with your keys; you are responsible for each provider’s terms and the content you generate.</div></div>
+</footer>
+</body>
+</html>

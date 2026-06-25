@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+
+      # Package: ffmpeg-static fetched its per-OS binary at npm ci; electron-builder bundles + installs.
+      - name: Build installers
+        run: npm run dist
+        env:
+          # unsigned builds (open-source); skip macOS signing/notarization discovery
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      # CI artifacts for every run (also for workflow_dispatch, which has no tag/release).
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.os }}
+          path: |
+            release/*.dmg
+            release/*.exe
+            release/*.AppImage
+            release/*.deb
+          if-no-files-found: ignore
+
+      # Attach to the GitHub Release for the tag (each OS job appends its own files).
+      - name: Publish to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          fail_on_unmatched_files: false
+          files: |
+            release/*.dmg
+            release/*.dmg.blockmap
+            release/*.exe
+            release/*.exe.blockmap
+            release/*.AppImage
+            release/*.deb
+            release/latest*.yml

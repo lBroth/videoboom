@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # typecheck + unit tests + build, on every OS (also proves the per-OS ffmpeg binary installs cleanly).
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Unit tests
+        run: npm run test:unit
+      - name: Build (main + renderer)
+        run: npm run build
+
+  # Electron integration: the offline engine self-test (real ffmpeg) + the renderer smoke test.
+  # Headless on Linux via xvfb; exit code is the pass/fail signal (app.exit(0|1)).
+  electron:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Engine self-test (offline ffmpeg path)
+        run: xvfb-run -a env VB_ENGINE_TEST=1 npx electron --no-sandbox .
+      - name: Renderer smoke test
+        run: xvfb-run -a env VB_SMOKE=1 npx electron --no-sandbox .
