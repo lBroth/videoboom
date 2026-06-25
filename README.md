@@ -1,6 +1,28 @@
-# Videoboom
+<p align="center">
+  <img src="icons/icon.png" width="124" alt="Videoboom" />
+</p>
 
-**Turn a song into a complete music video — on your own machine, with your own API keys.**
+<h1 align="center">Videoboom</h1>
+
+<p align="center">
+  <b>Turn a song into a complete music video — on your own machine, with your own API keys.</b>
+</p>
+
+<p align="center">
+  <a href="https://github.com/lBroth/videoboom/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/lBroth/videoboom?color=b14dff&label=download"></a>
+  <img alt="Platforms" src="https://img.shields.io/badge/platforms-Windows%20·%20macOS%20·%20Linux-7c4dff">
+  <a href="https://github.com/lBroth/videoboom/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/lBroth/videoboom/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/lBroth/videoboom/releases/latest"><b>⬇ Download</b></a> ·
+  <a href="#install-run-from-source">Run from source</a> ·
+  <a href="docs/ARCHITECTURE.md">Architecture</a> ·
+  <a href="docs/ROADMAP.md">Roadmap</a>
+</p>
+
+---
 
 Videoboom is an open-source desktop app. Drop in a song, optionally add a cast (reusable AI
 characters built from a photo or a description), and it writes a story from the lyrics, designs the
