@@ -64,12 +64,9 @@ In **Settings**, add your keys, then **Create** a video:
 | Key | Needed | Used for |
 |-----|--------|----------|
 | **OpenRouter** (`VB_OPENROUTER_API_KEY`) | **required** | story + shot list (LLM), keyframes, image-to-video, moderation |
-| **Replicate** (`REPLICATE_API_TOKEN`) | recommended | accurate forced-aligned lyric timing (WhisperX) |
-| **Groq** (`GROQ_API_KEY`) | optional | transcription fallback if Replicate isn't set |
+| **Replicate** (`REPLICATE_API_TOKEN`) | **required** | forced-aligned lyric timing (WhisperX) — reads the song's words + locks scenes to the singing |
 
-You need at least **OpenRouter** plus **one of Replicate / Groq** (something has to read the lyrics).
-Replicate is recommended — forced alignment locks scenes to the singing far better. Keys are encrypted
-with your OS keychain and never leave the machine.
+Both keys are needed; keys are encrypted with your OS keychain and never leave the machine.
 
 ## Packaged builds (no install for end users)
 `npm run dist` bundles ffmpeg into a native installer for the OS you run it on. The render engine is pure

@@ -429,10 +429,8 @@ function CharCard({ c }: { c: Character }) {
 const KEY_FIELDS: { name: string; label: string; hint: string; url: string; help: string }[] = [
   { name: 'openrouter', label: 'OpenRouter API key', hint: 'required — story, images & video', url: 'https://openrouter.ai/keys',
     help: 'Sign up at openrouter.ai, add a little credit, then Keys → Create key. One key covers the LLM, image and video models.' },
-  { name: 'replicate', label: 'Replicate API token', hint: 'recommended — accurate lyric timing', url: 'https://replicate.com/account/api-tokens',
-    help: 'Sign in with GitHub, open Account → API tokens, and copy your token. Used for WhisperX (precise word timing).' },
-  { name: 'groq', label: 'Groq API key', hint: 'optional — transcription fallback', url: 'https://console.groq.com/keys',
-    help: 'Free tier. console.groq.com → API Keys → Create. Only used if Replicate is unavailable.' },
+  { name: 'replicate', label: 'Replicate API token', hint: 'required — lyric timing (WhisperX)', url: 'https://replicate.com/account/api-tokens',
+    help: 'Sign in with GitHub, open Account → API tokens, and copy your token. Used for WhisperX forced-aligned word timing — needed to read the lyrics and sync scenes.' },
 ];
 const MODEL_FIELDS: { key: keyof Settings; label: string }[] = [
   { key: 'storyModel', label: 'Story model (LLM)' },

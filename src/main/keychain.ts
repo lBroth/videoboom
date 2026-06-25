@@ -6,12 +6,10 @@ import { app, safeStorage } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 
-// logical key name -> the env var the sidecar reads
+// logical key name -> the env var the render engine reads
 const ENV_MAP: Record<string, string> = {
-  openrouter: 'VB_OPENROUTER_API_KEY',   // required (LLM storyboard, image keyframes, i2v)
-  replicate: 'REPLICATE_API_TOKEN',      // accurate STT (WhisperX) — recommended
-  groq: 'GROQ_API_KEY',                  // STT fallback (optional)
-  fal: 'FAL_KEY',                        // reserved for future fal.ai providers
+  openrouter: 'VB_OPENROUTER_API_KEY',   // required (LLM storyboard, image keyframes, i2v, moderation)
+  replicate: 'REPLICATE_API_TOKEN',      // required (WhisperX forced-aligned transcription)
 };
 
 function keysFile(): string {

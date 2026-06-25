@@ -18,7 +18,7 @@ src/
   engine/                 the render engine (in-process, async; replaces the old Python sidecar)
     index.ts              runEngine(command,args,env,onEvent) dispatch; emits events, returns result
     pipeline.ts           storyboard -> keyframe pass -> clip pass -> assemble; regen; portrait
-    providers.ts          OpenRouter (LLM/keyframe/VLM/moderation/i2v) + Replicate/Groq transcription
+    providers.ts          OpenRouter (LLM/keyframe/VLM/moderation/i2v) + Replicate WhisperX transcription
     segment.ts            vocal-phrase segmentation + frame-grid timing + energy windows
     ffmpeg.ts             bundled ffmpeg/ffprobe; probe, thumb, ->png, fit-to-grid, still-fill, PCM decode
     storage.ts            local-filesystem state + media under the userData data/ dir

@@ -7,7 +7,6 @@ Settings** — naming models here and in the UI is fine (this is BYOK, not a hos
 | Stage | Provider | Default model (env) | Notes |
 |------|----------|---------------------|-------|
 | Transcription / alignment | **Replicate** | WhisperX (`REPLICATE_API_TOKEN`) | forced-aligned word timestamps → vocal-locked editing |
-| Transcription (fallback) | **Groq** | `whisper-large-v3-turbo` (`GROQ_API_KEY`, `VB_STT_MODEL`) | used only if Replicate is unset/unavailable; cross-attention timing (less precise) |
 | Story bible | OpenRouter | `anthropic/claude-sonnet-4.6` (`VB_STORY_MODEL`) | |
 | Shot list / LLM | OpenRouter | `google/gemini-3.5-flash` (`VB_LLM_MODEL`) | structured output |
 | Keyframes | OpenRouter | `google/gemini-3-pro-image` (`VB_KEYFRAME_MODEL`) | identity from cast refs; GPT image needs `input_fidelity:high` |
@@ -20,11 +19,10 @@ engine as config per op in `src/engine/config.ts` — never logged, never in git
 | Key | env | Needed |
 |-----|-----|--------|
 | OpenRouter | `VB_OPENROUTER_API_KEY` | **required** (LLM, keyframes, video, moderation) |
-| Replicate | `REPLICATE_API_TOKEN` | recommended (accurate forced-aligned timing) |
-| Groq | `GROQ_API_KEY` | optional transcription fallback |
-| fal | `FAL_KEY` | reserved (future fal.ai providers) — unused today |
+| Replicate | `REPLICATE_API_TOKEN` | **required** (WhisperX forced-aligned transcription) |
 
-Transcription needs **Replicate or Groq** (OpenRouter can't transcribe); everything else is OpenRouter.
+Two keys, both required: OpenRouter can't transcribe, so Replicate reads the lyrics + timing; everything
+else runs through OpenRouter.
 
 **Cost**: OpenRouter returns real `usage.cost` (we send `usage:{include:true}`) → cents. The app shows
 that **at-cost** total (no margin, no wallet). The user pays the providers directly.

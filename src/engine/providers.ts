@@ -1,6 +1,6 @@
 // Cloud model calls via the user's own keys (BYOK). OpenRouter for the LLM storyboard, image keyframes,
 // portrait captioning, moderation, and image-to-video; Replicate (WhisperX forced alignment) for accurate
-// word timings, with a Groq whisper fallback. Ported from the proven pipeline core; algorithms unchanged.
+// word timings. Ported from the proven pipeline core; algorithms unchanged.
 import fs from 'node:fs';
 import { env, envBool } from './config';
 import { costAdd, orCost } from './cost';
@@ -229,49 +229,11 @@ async function transcribeWhisperx(audioPath: string): Promise<Word[] | null> {
   return words;
 }
 
-async function transcribeGroq(audioPath: string): Promise<Word[]> {
-  const key = env('GROQ_API_KEY');
-  if (!key) return [];
-  const src = await toMp3_16k(audioPath, tmp('stt16.mp3'));
-  const form = new FormData();
-  form.append('model', env('VB_STT_MODEL', 'whisper-large-v3-turbo'));
-  form.append('response_format', 'verbose_json');
-  form.append('timestamp_granularities[]', 'word');
-  form.append('file', new Blob([fs.readFileSync(src)], { type: 'audio/mpeg' }), 'a.mp3');
-  let r: any;
-  try {
-    const ac = new AbortController();
-    const t = setTimeout(() => ac.abort(), 180_000);
-    const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
-      method: 'POST',
-      headers: { Authorization: 'Bearer ' + key, 'User-Agent': UA },
-      body: form,
-      signal: ac.signal,
-    });
-    clearTimeout(t);
-    r = await res.json();
-  } catch (ex) {
-    console.error('groq stt error', String(ex));
-    return [];
-  }
-  let out: Word[] = (r.words || [])
-    .filter((w: any) => (w.end || 0) > (w.start || 0))
-    .map((w: any) => ({ start: Number(w.start), end: Number(w.end), word: (w.word || '').trim() }));
-  if (!out.length) {
-    out = (r.segments || [])
-      .filter((s: any) => (s.end || 0) > (s.start || 0))
-      .map((s: any) => ({ start: Number(s.start), end: Number(s.end), word: (s.text || '').trim() }));
-  }
-  const secs = out.length ? out[out.length - 1].end : 0;
-  costAdd((secs / 60.0) * parseFloat(env('VB_STT_CENTS_PER_MIN', '0.07')));
-  return out;
-}
-
 export async function transcribeWords(audioPath: string): Promise<Word[]> {
   const wx = await transcribeWhisperx(audioPath);
   if (wx) return wx;
-  console.error('whisperx unavailable -> Groq turbo fallback');
-  return transcribeGroq(audioPath);
+  console.error('whisperx transcription unavailable (check the Replicate token)');
+  return [];
 }
 
 // ── images ────────────────────────────────────────────────────────────────────--
