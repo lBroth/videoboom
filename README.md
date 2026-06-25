@@ -10,6 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/lBroth/videoboom/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/lBroth/videoboom?color=b14dff&label=download"></a>
+  <a href="https://lbroth.github.io/videoboom/"><img alt="Website" src="https://img.shields.io/badge/website-videoboom-ff4db8"></a>
   <img alt="Platforms" src="https://img.shields.io/badge/platforms-Windows%20·%20macOS%20·%20Linux-7c4dff">
   <a href="https://github.com/lBroth/videoboom/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/lBroth/videoboom/actions/workflows/ci.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
@@ -17,6 +18,7 @@
 
 <p align="center">
   <a href="https://github.com/lBroth/videoboom/releases/latest"><b>⬇ Download</b></a> ·
+  <a href="https://lbroth.github.io/videoboom/"><b>Website</b></a> ·
   <a href="#install-run-from-source">Run from source</a> ·
   <a href="docs/ARCHITECTURE.md">Architecture</a> ·
   <a href="docs/ROADMAP.md">Roadmap</a>
