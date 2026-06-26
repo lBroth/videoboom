@@ -24,11 +24,17 @@ jobs:
       - run: npm ci
 
       # Package: ffmpeg-static fetched its per-OS binary at npm ci; electron-builder bundles + installs.
+      # macOS: if the Apple signing secrets are set, electron-builder Developer-ID signs and the afterSign
+      # hook notarizes + staples; if they're absent (e.g. a fork), the hook falls back to an ad-hoc
+      # signature. Windows/Linux ignore these.
       - name: Build installers
         run: npm run dist
         env:
-          # unsigned builds (open-source); skip macOS signing/notarization discovery
-          CSC_IDENTITY_AUTO_DISCOVERY: false
+          CSC_LINK: ${{ secrets.CSC_LINK }}                                  # base64 of the Developer ID .p12
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}                  # that .p12's export password
+          APPLE_ID: ${{ secrets.APPLE_ID }}                                  # Apple ID email
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}                        # e.g. 25LTRKH576
 
       # CI artifacts for every run (also for workflow_dispatch, which has no tag/release).
       - name: Upload build artifacts
