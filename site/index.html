@@ -37,6 +37,13 @@
   .brand img{width:34px;height:34px;border-radius:9px;box-shadow:0 6px 24px rgba(177,77,255,.35)}
   .navlinks{display:flex;gap:22px;align-items:center;color:var(--mut);font-size:14px}
   .navlinks a{text-decoration:none}.navlinks a:hover{color:var(--ink)}
+  /* phones: drop the inline text links (content has anchors below), keep logo + Download */
+  @media(max-width:680px){
+    nav{padding:16px}
+    .navlinks{gap:0}
+    .navlinks a:not(.btn){display:none}
+    .btn{padding:10px 15px}
+  }
   .btn{display:inline-flex;align-items:center;gap:9px;border-radius:11px;padding:11px 18px;
     font-weight:600;text-decoration:none;border:1px solid transparent;transition:.18s transform,.18s box-shadow}
   .btn:hover{transform:translateY(-1px)}
