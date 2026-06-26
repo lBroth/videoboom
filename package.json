@@ -58,6 +58,7 @@
     "files": ["dist/**/*", "renderer-dist/**/*", "icons/icon.png"],
     "asarUnpack": ["node_modules/ffmpeg-static/**", "node_modules/ffprobe-static/**"],
     "afterSign": "scripts/mac-sign.js",
+    "afterAllArtifactBuild": "scripts/notarize-dmg.js",
     "mac": {
       "category": "public.app-category.video",
       "target": ["dmg"],
