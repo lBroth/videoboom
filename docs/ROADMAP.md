@@ -36,6 +36,20 @@ cost, fully offline, maximum privacy. The engine is already provider-abstracted 
   Silicon, so it lands last.
 - Keep it **opt-in and mix-and-match**: e.g. local LLM + cloud video, chosen per stage in Settings.
 
+## TODO — block re-triggering a generation that's already running
+A render is already one-at-a-time in the backend (the main process refuses a second render / resume /
+scene-regenerate while one is active, returning a clear error — no new job is created). Finish the UX:
+- **Disable the action buttons** (Render, Finish full song, Regenerate scene, Create) while any generation
+  is in progress — show a busy/disabled state so a second trigger can't even be attempted.
+- If one is somehow triggered anyway, surface the backend's "a render is already in progress" error in the
+  UI instead of silently doing nothing.
+
+## TODO — uploaded character photo = use it as-is (don't regenerate)
+When a user **uploads a photo** for a character, use that image directly as the character's primary
+reference (moderate + caption only) — do **not** pass it through the image model to "reproduce the exact
+face", which can alter the identity. Only generate an image when the character is description-only (no
+upload). Today `characterPortrait` regenerates even on upload.
+
 ## TODO — estimated cost / minute in Settings
 Show a live **€/min of video** estimate in Settings, computed from the **active cloud models** per stage
 (local stages = €0, since they run on the user's own hardware).
