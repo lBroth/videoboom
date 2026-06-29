@@ -23,6 +23,11 @@ GPU_LOCK = threading.Lock()  # one model job at a time (shared unified memory)
 
 
 def _handle_i2v(req: dict) -> dict:
+    # Wan's generate_video self-loads/frees its weights outside the ModelManager, so first evict any
+    # resident keyframe/LLM/VLM model — otherwise that (~10GB FLUX, ~19GB LLM) plus Wan's ~24GB peak
+    # OOMs unified memory after a couple of clips (Metal "Insufficient Memory").
+    from manager import unload_all
+    unload_all()
     from wan_i2v import run_i2v
     return run_i2v(req)
 
