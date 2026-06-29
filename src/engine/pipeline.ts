@@ -315,8 +315,14 @@ async function renderScenes(pid: string, emit: Emit, cancelled: Cancelled): Prom
   if (!toRender.length) return assemble(pid, emit);
   S.updateProject(pid, { status: 'rendering', stage: 'rendering', previewScenes: done.size + toRender.length, renderStartedAt: Date.now() / 1000 });
 
-  // keyframe pass — each scene we render + its morph target (next scene's keyframe). Parallel; reused.
-  const needed = Array.from(new Set([...toRender, ...toRender.filter((k) => k + 1 < n).map((k) => k + 1)])).sort((a, b) => a - b);
+  // keyframe pass — each scene we render + its morph target (next scene's keyframe). Order so all no-ref
+  // (FLUX txt2img) scenes run together and all ref (FLUX Kontext) scenes run together, so a cast-mixed
+  // project swaps the heavy keyframe model at most once instead of thrashing it per scene. Generation
+  // order doesn't affect which keyframes exist, so this is safe for the morph chaining.
+  const hasRef = (k: number) => refsForScene(p, S.getScene(pid, k) || {}).length > 0;
+  const needed = Array.from(new Set([...toRender, ...toRender.filter((k) => k + 1 < n).map((k) => k + 1)])).sort(
+    (a, b) => (hasRef(a) ? 1 : 0) - (hasRef(b) ? 1 : 0) || a - b,
+  );
   emit({ event: 'stage', stage: 'keyframes', total: needed.length });
   const kfPaths: Record<number, string | null> = {};
   await mapPool(needed, workers(), async (k) => {

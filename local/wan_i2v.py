@@ -10,7 +10,79 @@ The server process staying warm + the OS page cache keep the model files hot, bu
 a true weight-resident loop would mean vendoring the denoise loop. Left as a
 follow-up — correctness first.
 """
+import functools
 import os
+
+# Resident Wan weights: mlx-video's generate_video reloads T5 + both 14B transformers + VAE from disk on
+# every call. We memoize the heavy loaders (the transformers + VAE — NOT T5, which generate_video frees
+# before denoise to save memory) so clips 2..N reuse the in-memory weights instead of re-reading ~16GB.
+# The cache lives outside the ModelManager; a manager unload-hook drops it when a keyframe/LLM model loads.
+_RESIDENT_WAN: dict = {}
+_PATCHED = False
+_WIRED_SET = False
+
+
+def _free_resident_wan() -> None:
+    if not _RESIDENT_WAN:
+        return
+    _RESIDENT_WAN.clear()
+    import gc
+    import mlx.core as mx
+    gc.collect()
+    try:
+        mx.clear_cache()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _memoize(mod, name: str) -> None:
+    orig = getattr(mod, name)
+    if getattr(orig, "_vb_memoized", False):
+        return
+
+    @functools.wraps(orig)
+    def wrapper(*args, **kwargs):
+        path = str(args[0]) if args else ""
+        key = (name, path, repr(kwargs.get("loras")))
+        if key not in _RESIDENT_WAN:
+            _RESIDENT_WAN[key] = orig(*args, **kwargs)
+        return _RESIDENT_WAN[key]
+
+    wrapper._vb_memoized = True
+    setattr(mod, name, wrapper)
+
+
+def _ensure_resident() -> None:
+    """Patch generate_video's heavy loaders to memoize by path (+ loras), and register a hook so the cache
+    is freed when another heavy model (keyframe/LLM) loads via the ModelManager."""
+    global _PATCHED
+    if _PATCHED:
+        return
+    from mlx_video.models.wan_2 import generate as gen
+    for name in ("load_wan_model", "load_vae_decoder", "load_vae_encoder"):
+        _memoize(gen, name)
+    try:
+        from manager import register_unload_hook
+        register_unload_hook(_free_resident_wan)
+    except Exception:  # noqa: BLE001
+        pass
+    _PATCHED = True
+
+
+def _set_wired_limit() -> None:
+    # Opt-in (VB_LOCAL_WIRED_GB): pin weights as wired so macOS doesn't compress/page the resident model.
+    global _WIRED_SET
+    if _WIRED_SET:
+        return
+    _WIRED_SET = True
+    gb = os.environ.get("VB_LOCAL_WIRED_GB", "")
+    if not gb:
+        return
+    try:
+        import mlx.core as mx
+        mx.set_wired_limit(int(float(gb) * 1024 ** 3))
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _snap_4n1(n: int) -> int:
@@ -22,6 +94,14 @@ def _snap_4n1(n: int) -> int:
 def run_i2v(req: dict) -> dict:
     # Imported lazily so the server can answer /health before mlx-video is ready.
     from mlx_video.models.wan_2.generate import generate_video
+
+    # Resident Wan weights across clips: OFF by default. Measured net-NEGATIVE on a 48GB Mac — keeping the
+    # ~16GB transformers resident saves the ~15s reload but starves the denoise (memory pressure + per-call
+    # re-compile), making each clip slower overall. Opt in (VB_LOCAL_WAN_RESIDENT=1) only on a higher-memory
+    # Mac (64/128GB) where the headroom exists. The real speed levers are TI2V-5B / fewer-frames+RIFE.
+    if int(req.get("resident", os.environ.get("VB_LOCAL_WAN_RESIDENT", "0"))):
+        _ensure_resident()
+    _set_wired_limit()
 
     model_dir = req["model_dir"]
     image = req["image"]
