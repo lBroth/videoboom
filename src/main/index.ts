@@ -11,6 +11,7 @@ import { runEngine, dataDir, EngineEvent } from '../engine';
 const ICON = path.join(app.getAppPath(), 'icons', 'icon.png');
 import { keysEnv, keyStatus, setKey } from './keychain';
 import { settingsEnv, getSettings, setSettings, Settings } from './settings';
+import { modelStatus, downloadModel, DownloadRun } from './localModels';
 import { getProject, listScenes, listProjects, listCharacters, mediaUrl } from './projects';
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5273';
@@ -78,6 +79,37 @@ function streamOp(opId: string, command: string, args: string[]) {
   return run.done;
 }
 const RUNS = new Map<string, ReturnType<typeof runEngine>>();
+const DOWNLOADS = new Map<string, DownloadRun>();
+
+// Stages whose Local backend is selected but whose model isn't installed yet — render is blocked until
+// they're downloaded (in Settings). Maps each backend setting to its model-status key + a friendly label.
+function missingLocalModels(): string[] {
+  const s = getSettings();
+  const st = modelStatus();
+  const map: [keyof Settings, string, string][] = [
+    ['videoBackend', 'VIDEO', 'Video (Wan)'],
+    ['sttBackend', 'STT', 'Lyric timing'],
+    ['llmBackend', 'LLM', 'Story & shots'],
+    ['vlmBackend', 'VLM', 'Face caption'],
+    ['keyframeBackend', 'KEYFRAME', 'Keyframes'],
+  ];
+  return map.filter(([field, key]) => (s as any)[field] === 'local' && st[key] !== 'ready').map(([, , label]) => label);
+}
+
+// Refuse a render and surface the reason on the render's progress channel (the renderer is listening there).
+function refuseRender(pid: string, message: string): Promise<never> {
+  win?.webContents.send(`sidecar:render:${pid}`, { event: 'error', message });
+  return Promise.reject(new Error(message));
+}
+
+/** Guard render starts: one render at a time, no render mid-download, and required local models present. */
+function guardRender(pid: string): Promise<never> | null {
+  if (DOWNLOADS.size) return refuseRender(pid, 'A model download is in progress — wait for it to finish, then render.');
+  const miss = missingLocalModels();
+  if (miss.length) return refuseRender(pid, `Download the local model(s) first in Settings → On-device: ${miss.join(', ')}.`);
+  if ([...RUNS.keys()].some((k) => k.startsWith('render:'))) return refuseRender(pid, 'A render is already in progress — only one runs at a time.');
+  return null;
+}
 
 function registerIpc() {
   // ── read-only state (renderer reads JSON straight off disk via main) ──
@@ -136,10 +168,27 @@ function registerIpc() {
     streamOp('portrait:' + o.character, 'character-portrait',
       ['--character', o.character, ...(o.photo ? ['--photo', o.photo] : []), ...(o.prompt ? ['--prompt', o.prompt] : [])]));
 
+  // ── on-device model availability + downloads (renderer subscribes to download:<STAGE>) ──
+  ipcMain.handle('models:status', () => modelStatus());
+  ipcMain.handle('models:download', (_e, stage: string) => {
+    if (DOWNLOADS.has(stage)) return DOWNLOADS.get(stage)!.done; // already downloading — join it
+    const run = downloadModel(stage, (ev) => win?.webContents.send(`download:${stage}`, ev));
+    DOWNLOADS.set(stage, run);
+    run.done.finally(() => {
+      DOWNLOADS.delete(stage);
+      win?.webContents.send(`download:${stage}`, { event: 'closed' });
+    });
+    return run.done;
+  });
+  ipcMain.handle('models:downloadCancel', (_e, stage: string) => {
+    DOWNLOADS.get(stage)?.cancel();
+    return true;
+  });
+
   // ── streaming render ops (renderer subscribes to sidecar:<opId>) ──
   ipcMain.handle('render:start', (_e, o: { pid: string; preview: boolean }) =>
-    streamOp('render:' + o.pid, 'render', ['--project', o.pid, ...(o.preview ? ['--preview'] : [])]));
-  ipcMain.handle('render:resume', (_e, pid: string) => streamOp('render:' + pid, 'resume', ['--project', pid]));
+    guardRender(o.pid) ?? streamOp('render:' + o.pid, 'render', ['--project', o.pid, ...(o.preview ? ['--preview'] : [])]));
+  ipcMain.handle('render:resume', (_e, pid: string) => guardRender(pid) ?? streamOp('render:' + pid, 'resume', ['--project', pid]));
   ipcMain.handle('scene:regenerate', (_e, o: { pid: string; index: number }) =>
     streamOp('render:' + o.pid, 'regenerate-scene', ['--project', o.pid, '--index', String(o.index)]));
   ipcMain.handle('op:cancel', (_e, opId: string) => { RUNS.get(opId)?.cancel(); return true; });

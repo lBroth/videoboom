@@ -52,6 +52,10 @@ export interface VBApi {
   resume(pid: string): Promise<Record<string, unknown>>;
   regenerateScene(pid: string, index: number): Promise<Record<string, unknown>>;
   cancel(opId: string): Promise<boolean>;
+  modelsStatus(): Promise<Record<string, 'ready' | 'absent'>>;
+  downloadModel(stage: string): Promise<void>;
+  cancelDownload(stage: string): Promise<boolean>;
+  onDownload(stage: string, cb: (e: SidecarEvent & { pct?: number; mb?: number }) => void): () => void;
   on(opId: string, cb: (e: SidecarEvent) => void): () => void;
 }
 

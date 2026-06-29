@@ -4,7 +4,7 @@ import {
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Sparkles, Film, UserRound, Settings as SettingsIcon, Music, Plus, RotateCcw, Trash2,
-  KeyRound, Image as ImageIcon, Wand2, AlertTriangle, CheckCircle2, ExternalLink, ChevronRight,
+  KeyRound, Image as ImageIcon, Wand2, AlertTriangle, CheckCircle2, ExternalLink, ChevronRight, Download,
 } from 'lucide-react';
 import {
   Button, IconButton, Card, Field, Segmented, ProgressBar, Spinner, StatusDot, EmptyState,
@@ -432,12 +432,74 @@ const KEY_FIELDS: { name: string; label: string; hint: string; url: string; help
   { name: 'replicate', label: 'Replicate API token', hint: 'required — lyric timing (WhisperX)', url: 'https://replicate.com/account/api-tokens',
     help: 'Sign in with GitHub, open Account → API tokens, and copy your token. Used for WhisperX forced-aligned word timing — needed to read the lyrics and sync scenes.' },
 ];
-const LOCAL_STAGES: { key: keyof Settings; label: string; cloud: string; local: string }[] = [
-  { key: 'sttBackend', label: 'Lyric timing (STT)', cloud: 'WhisperX · Replicate', local: 'whisper · mlx' },
-  { key: 'llmBackend', label: 'Story & shot-list (LLM)', cloud: 'Claude / Gemini', local: 'Qwen3 · mlx-lm' },
-  { key: 'vlmBackend', label: 'Face caption + safety (VLM)', cloud: 'gemma · cloud', local: 'gemma-3 · mlx-vlm' },
-  { key: 'keyframeBackend', label: 'Keyframe images', cloud: 'gemini-image', local: 'FLUX · mflux' },
+const LOCAL_STAGES: { key: keyof Settings; stage: string; label: string; cloud: string; local: string; size: string }[] = [
+  { key: 'sttBackend', stage: 'STT', label: 'Lyric timing (STT)', cloud: 'WhisperX · Replicate', local: 'whisper · mlx', size: '~1.6 GB' },
+  { key: 'llmBackend', stage: 'LLM', label: 'Story & shot-list (LLM)', cloud: 'Claude / Gemini', local: 'Qwen3 · mlx-lm', size: '~19 GB' },
+  { key: 'vlmBackend', stage: 'VLM', label: 'Face caption + safety (VLM)', cloud: 'gemma · cloud', local: 'gemma-3 · mlx-vlm', size: '~8 GB' },
+  { key: 'keyframeBackend', stage: 'KEYFRAME', label: 'Keyframe images', cloud: 'gemini-image', local: 'FLUX · mflux', size: '~15 GB' },
 ];
+
+// One stage row: Cloud/Local toggle where Local is gated until the model is downloaded; shows a Download
+// button (with live % progress) when the model is absent.
+function StageRow({ st, value }: { st: (typeof LOCAL_STAGES)[number]; value: 'cloud' | 'local' }) {
+  const qc = useQueryClient();
+  const status = useQuery({ queryKey: ['modelStatus'], queryFn: () => vb.modelsStatus() });
+  const [dl, setDl] = useState<{ pct: number } | null>(null);
+  const [err, setErr] = useState('');
+  const ready = status.data?.[st.stage] === 'ready';
+
+  const startDownload = () => {
+    setErr('');
+    setDl({ pct: 0 });
+    const off = vb.onDownload(st.stage, (e) => {
+      if (e.event === 'progress') setDl({ pct: e.pct ?? 0 });
+      else if (e.event === 'error') { setErr(e.error || 'download failed'); setDl(null); off(); }
+      else if (e.event === 'done' || e.event === 'closed') { setDl(null); off(); qc.invalidateQueries({ queryKey: ['modelStatus'] }); }
+    });
+    vb.downloadModel(st.stage).catch((e) => { setErr(String(e?.message || e)); setDl(null); off(); });
+  };
+
+  const pick = (b: 'cloud' | 'local') => {
+    if (b === 'local' && !ready) return; // gated — must download first
+    vb.setSettings({ [st.key]: b } as Partial<Settings>).then(() => qc.invalidateQueries({ queryKey: ['settings'] }));
+  };
+
+  return (
+    <Field label={st.label}>
+      <div className="grid grid-cols-2 gap-2">
+        <button onClick={() => pick('cloud')}
+          className={cx('rounded-lg border px-3 py-2 text-left transition-colors',
+            value === 'cloud' ? 'border-violet-400/60 bg-violet-500/10 text-slate-100' : 'border-white/10 hover:bg-white/[0.03] text-slate-300')}>
+          <div className="text-sm font-medium">Cloud</div>
+          <div className="text-xs text-slate-500">{st.cloud}</div>
+        </button>
+        <button onClick={() => pick('local')} disabled={!ready}
+          className={cx('rounded-lg border px-3 py-2 text-left transition-colors',
+            value === 'local' ? 'border-violet-400/60 bg-violet-500/10 text-slate-100'
+              : ready ? 'border-white/10 hover:bg-white/[0.03] text-slate-300' : 'border-white/5 text-slate-600 cursor-not-allowed')}>
+          <div className="text-sm font-medium flex items-center gap-1">Local {ready && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />}</div>
+          <div className="text-xs text-slate-500">{st.local}</div>
+        </button>
+      </div>
+      {!ready && (
+        <div className="mt-1.5">
+          {dl ? (
+            <div className="flex items-center gap-2">
+              <div className="flex-1 h-1.5 rounded-full bg-white/10 overflow-hidden"><div className="h-full bg-violet-400 transition-all" style={{ width: `${dl.pct}%` }} /></div>
+              <span className="text-xs text-slate-400 tabular-nums">{dl.pct.toFixed(0)}%</span>
+              <button onClick={() => vb.cancelDownload(st.stage)} className="text-xs text-slate-500 hover:text-slate-300">cancel</button>
+            </div>
+          ) : (
+            <button onClick={startDownload} className="text-xs inline-flex items-center gap-1.5 rounded-lg border border-violet-400/40 bg-violet-500/10 px-2.5 py-1 text-violet-200 hover:bg-violet-500/20">
+              <Download className="w-3.5 h-3.5" /> Download model ({st.size}) to enable Local
+            </button>
+          )}
+          {err && <div className="text-xs text-red-300 mt-1">{err}</div>}
+        </div>
+      )}
+    </Field>
+  );
+}
 const MODEL_FIELDS: { key: keyof Settings; label: string }[] = [
   { key: 'storyModel', label: 'Story model (LLM)' },
   { key: 'llmModel', label: 'Shot-list model (LLM)' },
@@ -479,18 +541,7 @@ function SettingsScreen() {
           <div className="border-t border-white/5 pt-3 space-y-3">
             <p className="text-xs text-slate-400">On-device stages (MLX). Local = free + offline; first use downloads the model. Needs <code className="text-slate-300">bash local/setup.sh</code> + a 48GB+ Apple Silicon Mac.</p>
             {LOCAL_STAGES.map((st) => (
-              <Field key={st.key} label={st.label}>
-                <div className="grid grid-cols-2 gap-2">
-                  {(['cloud', 'local'] as const).map((b) => (
-                    <button key={b} onClick={() => vb.setSettings({ [st.key]: b } as Partial<Settings>).then(() => qc.invalidateQueries({ queryKey: ['settings'] }))}
-                      className={cx('rounded-lg border px-3 py-2 text-left transition-colors',
-                        settings.data![st.key] === b ? 'border-violet-400/60 bg-violet-500/10 text-slate-100' : 'border-white/10 hover:bg-white/[0.03] text-slate-300')}>
-                      <div className="text-sm font-medium">{b === 'cloud' ? 'Cloud' : 'Local'}</div>
-                      <div className="text-xs text-slate-500">{b === 'cloud' ? st.cloud : st.local}</div>
-                    </button>
-                  ))}
-                </div>
-              </Field>
+              <StageRow key={st.key} st={st} value={settings.data![st.key] as 'cloud' | 'local'} />
             ))}
           </div>
           {settings.data.videoBackend === 'local' && (
