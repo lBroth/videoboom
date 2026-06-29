@@ -36,6 +36,17 @@ cost, fully offline, maximum privacy. The engine is already provider-abstracted 
   Silicon, so it lands last.
 - Keep it **opt-in and mix-and-match**: e.g. local LLM + cloud video, chosen per stage in Settings.
 
+## TODO — local i2v model options (researched 2026)
+Keep **Wan 2.2 I2V-A14B (MLX 4-bit) + Wan2.2-Lightning** as the default — it's still the open leader
+for cinematic i2v with realistic people at 480–720p, and fits 48GB. Two additions worth doing:
+- **Draft/preview tier — distilled LTX-2 / LTX-Video** (mlx-video / dgrauet/ltx-2-mlx). Fast few-step rough
+  cuts and the only one with **native synced audio**. NB: LTX-2.3 (22B) is **not** lighter/faster than
+  Wan-14B on Mac (the "fast LTX" reputation is its CUDA distilled pipeline) — only add the *distilled* path.
+- **Watchlist — HunyuanVideo-1.5** (8.3B, Apache-2.0): lightest of the strong models, best motion/physics;
+  add once a mature **native MLX** runner ships (only an MPS port of the original Hunyuan exists today).
+- Not worth it on Mac: CogVideoX / Mochi / SVD / Wan2.2-Animate (obsolete or CUDA-only). "Vidu Q1" (the
+  "vubeq" someone mentioned) is closed cloud-only — ignore.
+
 ## TODO — block re-triggering a generation that's already running
 A render is already one-at-a-time in the backend (the main process refuses a second render / resume /
 scene-regenerate while one is active, returning a clear error — no new job is created). Finish the UX:
