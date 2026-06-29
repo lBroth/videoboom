@@ -44,6 +44,46 @@ function videoReady(): boolean {
   }
 }
 
+const MIN_RAM_GB = 32; // biggest single stage (Wan i2v ~24GB) + macOS/app overhead
+const RECOMMENDED_RAM_GB = 48;
+
+export interface LocalCapabilities {
+  platform: string; // 'darwin' | 'win32' | 'linux'
+  arch: string; // 'arm64' | 'x64'
+  ramGB: number;
+  isAppleSilicon: boolean;
+  minRamGB: number;
+  recommendedRamGB: number;
+  depsInstalled: boolean; // local/.venv present (setup.sh ran)
+  supported: boolean; // Apple Silicon + enough RAM
+  reason: string; // why unsupported, '' if supported
+}
+
+/** Can this machine run on-device models? On-device = Apple Silicon + enough unified memory. Used to hide
+ * the whole On-device Settings section on unsupported machines and gate it on the minimum RAM. */
+export function localCapabilities(): LocalCapabilities {
+  const platform = process.platform;
+  const arch = process.arch;
+  const ramGB = Math.round(os.totalmem() / 1024 ** 3);
+  const isAppleSilicon = platform === 'darwin' && arch === 'arm64';
+  const depsInstalled = fs.existsSync(localPython());
+  let reason = '';
+  if (platform !== 'darwin') reason = 'On-device models currently require macOS (Apple Silicon).';
+  else if (arch !== 'arm64') reason = 'On-device models require an Apple Silicon Mac (M-series).';
+  else if (ramGB < MIN_RAM_GB) reason = `Needs ${MIN_RAM_GB}GB+ unified memory — this Mac has ${ramGB}GB.`;
+  return {
+    platform,
+    arch,
+    ramGB,
+    isAppleSilicon,
+    minRamGB: MIN_RAM_GB,
+    recommendedRamGB: RECOMMENDED_RAM_GB,
+    depsInstalled,
+    supported: isAppleSilicon && ramGB >= MIN_RAM_GB,
+    reason,
+  };
+}
+
 export type StageState = 'ready' | 'absent';
 
 /** Per-stage model availability. VIDEO (Wan) is provisioned by setup.sh; the rest by the Download button. */

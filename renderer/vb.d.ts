@@ -23,6 +23,10 @@ export interface Settings {
   sttBackend: 'cloud' | 'local'; llmBackend: 'cloud' | 'local'; vlmBackend: 'cloud' | 'local';
   keyframeBackend: 'cloud' | 'local';
 }
+export interface LocalCapabilities {
+  platform: string; arch: string; ramGB: number; isAppleSilicon: boolean;
+  minRamGB: number; recommendedRamGB: number; depsInstalled: boolean; supported: boolean; reason: string;
+}
 export interface SidecarEvent {
   event: string; stage?: string; total?: number; index?: number; status?: string;
   ok?: boolean; error?: string; videoKey?: string; scenesDone?: number; scenesFailed?: number;
@@ -52,6 +56,7 @@ export interface VBApi {
   resume(pid: string): Promise<Record<string, unknown>>;
   regenerateScene(pid: string, index: number): Promise<Record<string, unknown>>;
   cancel(opId: string): Promise<boolean>;
+  localCapabilities(): Promise<LocalCapabilities>;
   modelsStatus(): Promise<Record<string, 'ready' | 'absent'>>;
   downloadModel(stage: string): Promise<void>;
   cancelDownload(stage: string): Promise<boolean>;

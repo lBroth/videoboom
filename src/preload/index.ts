@@ -29,7 +29,8 @@ export interface VBApi {
   resume(pid: string): Promise<any>;
   regenerateScene(pid: string, index: number): Promise<any>;
   cancel(opId: string): Promise<boolean>;
-  // on-device models: availability + download (with progress on `download:<STAGE>`)
+  // on-device models: capability gate + availability + download (with progress on `download:<STAGE>`)
+  localCapabilities(): Promise<any>;
   modelsStatus(): Promise<Record<string, 'ready' | 'absent'>>;
   downloadModel(stage: string): Promise<void>;
   cancelDownload(stage: string): Promise<boolean>;
@@ -65,6 +66,7 @@ const api: VBApi = {
   regenerateScene: (pid, index) => ipcRenderer.invoke('scene:regenerate', { pid, index }),
   cancel: (opId) => ipcRenderer.invoke('op:cancel', opId),
 
+  localCapabilities: () => ipcRenderer.invoke('local:capabilities'),
   modelsStatus: () => ipcRenderer.invoke('models:status'),
   downloadModel: (stage) => ipcRenderer.invoke('models:download', stage),
   cancelDownload: (stage) => ipcRenderer.invoke('models:downloadCancel', stage),

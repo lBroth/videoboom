@@ -512,6 +512,8 @@ function SettingsScreen() {
   const qc = useQueryClient();
   const keys = useQuery({ queryKey: ['keys'], queryFn: () => vb.keysStatus() });
   const settings = useQuery({ queryKey: ['settings'], queryFn: () => vb.getSettings() });
+  const caps = useQuery({ queryKey: ['localCaps'], queryFn: () => vb.localCapabilities() });
+  const status = useQuery({ queryKey: ['modelStatus'], queryFn: () => vb.modelsStatus() });
   const [dataDir, setDataDir] = useState('');
   const [adv, setAdv] = useState(false);
   useEffect(() => { vb.dataDir().then(setDataDir); }, []);
@@ -524,27 +526,45 @@ function SettingsScreen() {
         {KEY_FIELDS.map((f) => <KeyRow key={f.name} f={f} set={!!keys.data?.[f.name]} onSaved={() => qc.invalidateQueries({ queryKey: ['keys'] })} />)}
       </Card>
 
-      {settings.data && (
+      {settings.data && caps.data && (
         <Card className="p-5 space-y-4">
-          <div className="flex items-center gap-2"><Film className="w-5 h-5 text-violet-300" /><h2 className="font-semibold text-slate-100">Video backend</h2></div>
-          <p className="text-sm text-slate-400 -mt-1">Where image-to-video runs. <b className="text-slate-300">Cloud</b> is fast and uses your OpenRouter key. <b className="text-slate-300">Local</b> runs Wan 2.2 on this Mac (MLX) — no key, no cost, but slow (minutes per clip) and needs a one-time setup.</p>
-          <div className="grid grid-cols-2 gap-2">
-            {(['cloud', 'local'] as const).map((b) => (
-              <button key={b} onClick={() => vb.setSettings({ videoBackend: b }).then(() => qc.invalidateQueries({ queryKey: ['settings'] }))}
-                className={cx('rounded-xl border px-4 py-3 text-left transition-colors',
-                  settings.data!.videoBackend === b ? 'border-violet-400/60 bg-violet-500/10 text-slate-100' : 'border-white/10 hover:bg-white/[0.03] text-slate-300')}>
-                <div className="font-medium">{b === 'cloud' ? 'Cloud (OpenRouter)' : 'Local (Wan 2.2 MLX)'}</div>
-                <div className="text-xs text-slate-500 mt-0.5">{b === 'cloud' ? 'Fast · pay providers at cost' : 'On-device · free · 720p · slow'}</div>
-              </button>
-            ))}
+          <div className="flex items-center gap-2">
+            <Film className="w-5 h-5 text-violet-300" /><h2 className="font-semibold text-slate-100">On-device models</h2>
+            <span className="text-xs text-slate-500 ml-auto">{caps.data.ramGB}GB unified memory</span>
           </div>
-          <div className="border-t border-white/5 pt-3 space-y-3">
-            <p className="text-xs text-slate-400">On-device stages (MLX). Local = free + offline; first use downloads the model. Needs <code className="text-slate-300">bash local/setup.sh</code> + a 48GB+ Apple Silicon Mac.</p>
-            {LOCAL_STAGES.map((st) => (
-              <StageRow key={st.key} st={st} value={settings.data![st.key] as 'cloud' | 'local'} />
-            ))}
-          </div>
-          {settings.data.videoBackend === 'local' && (
+
+          {!caps.data.supported ? (
+            <div className="rounded-xl bg-amber-500/10 border border-amber-500/20 px-3 py-2.5 text-sm text-amber-200/90">
+              On-device models need an <b>Apple Silicon Mac</b> with <b>{caps.data.minRamGB}GB+</b> unified memory ({caps.data.recommendedRamGB}GB recommended). {caps.data.reason} Everything runs in the cloud here.
+            </div>
+          ) : (
+            <>
+              <p className="text-sm text-slate-400 -mt-1">Run each stage on this Mac (MLX) — no key, no cost, fully offline — or in the cloud. Local is slower and the model downloads once. Needs ~24GB free for video at peak; {caps.data.recommendedRamGB}GB recommended.</p>
+              {!caps.data.depsInstalled && (
+                <div className="rounded-xl bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-xs text-amber-200/90">
+                  Local engine not installed yet — run <code className="text-amber-100">bash local/setup.sh</code> once (installs mlx + downloads the Wan video model).
+                </div>
+              )}
+              <Field label="Video (i2v)">
+                <div className="grid grid-cols-2 gap-2">
+                  <button onClick={() => vb.setSettings({ videoBackend: 'cloud' }).then(() => qc.invalidateQueries({ queryKey: ['settings'] }))}
+                    className={cx('rounded-lg border px-3 py-2 text-left transition-colors', settings.data!.videoBackend === 'cloud' ? 'border-violet-400/60 bg-violet-500/10 text-slate-100' : 'border-white/10 hover:bg-white/[0.03] text-slate-300')}>
+                    <div className="text-sm font-medium">Cloud</div><div className="text-xs text-slate-500">Kling · OpenRouter</div>
+                  </button>
+                  <button onClick={() => { if (status.data?.VIDEO === 'ready') vb.setSettings({ videoBackend: 'local' }).then(() => qc.invalidateQueries({ queryKey: ['settings'] })); }} disabled={status.data?.VIDEO !== 'ready'}
+                    className={cx('rounded-lg border px-3 py-2 text-left transition-colors', settings.data!.videoBackend === 'local' ? 'border-violet-400/60 bg-violet-500/10 text-slate-100' : status.data?.VIDEO === 'ready' ? 'border-white/10 hover:bg-white/[0.03] text-slate-300' : 'border-white/5 text-slate-600 cursor-not-allowed')}>
+                    <div className="text-sm font-medium flex items-center gap-1">Local {status.data?.VIDEO === 'ready' && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />}</div>
+                    <div className="text-xs text-slate-500">{status.data?.VIDEO === 'ready' ? 'Wan 2.2 · ~24GB peak' : 'run local/setup.sh'}</div>
+                  </button>
+                </div>
+              </Field>
+              {LOCAL_STAGES.map((st) => (
+                <StageRow key={st.key} st={st} value={settings.data![st.key] as 'cloud' | 'local'} />
+              ))}
+            </>
+          )}
+
+          {caps.data.supported && settings.data.videoBackend === 'local' && (
             <div className="space-y-3 border-t border-white/5 pt-3">
               <p className="text-xs text-slate-400">Run <code className="text-slate-300">bash local/setup.sh</code> once to install mlx-video and download + convert the model. The app auto-finds it; override the model dir below only if needed.</p>
               <Field label="Speed / quality">

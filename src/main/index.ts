@@ -11,7 +11,7 @@ import { runEngine, dataDir, EngineEvent } from '../engine';
 const ICON = path.join(app.getAppPath(), 'icons', 'icon.png');
 import { keysEnv, keyStatus, setKey } from './keychain';
 import { settingsEnv, getSettings, setSettings, Settings } from './settings';
-import { modelStatus, downloadModel, DownloadRun } from './localModels';
+import { modelStatus, downloadModel, localCapabilities, DownloadRun } from './localModels';
 import { getProject, listScenes, listProjects, listCharacters, mediaUrl } from './projects';
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5273';
@@ -169,6 +169,7 @@ function registerIpc() {
       ['--character', o.character, ...(o.photo ? ['--photo', o.photo] : []), ...(o.prompt ? ['--prompt', o.prompt] : [])]));
 
   // ── on-device model availability + downloads (renderer subscribes to download:<STAGE>) ──
+  ipcMain.handle('local:capabilities', () => localCapabilities());
   ipcMain.handle('models:status', () => modelStatus());
   ipcMain.handle('models:download', (_e, stage: string) => {
     if (DOWNLOADS.has(stage)) return DOWNLOADS.get(stage)!.done; // already downloading — join it
