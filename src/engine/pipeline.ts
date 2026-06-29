@@ -407,7 +407,8 @@ export async function characterPortrait(cid: string, uploadKey: string, prompt: 
   if (!c) throw new Error(`character ${cid} not found`);
   let src: string | null = null;
   if (uploadKey) {
-    const raw = S.copyOut(uploadKey, S.tmp(`char_in_${cid}`));
+    // uploadKey may be an absolute path the user picked OR a media key — copyInput handles both.
+    const raw = S.copyInput(uploadKey, S.tmp(`char_in_${cid}`));
     src = (await toPng(raw, S.tmp(`char_src_${cid}.png`))) || raw;
     const [safe, codes] = await P.moderateImage(src);
     if (!safe) {
