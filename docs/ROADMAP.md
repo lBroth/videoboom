@@ -36,8 +36,23 @@ cost, fully offline, maximum privacy. The engine is already provider-abstracted 
   Silicon, so it lands last.
 - Keep it **opt-in and mix-and-match**: e.g. local LLM + cloud video, chosen per stage in Settings.
 
+## TODO — estimated cost / minute in Settings
+Show a live **€/min of video** estimate in Settings, computed from the **active cloud models** per stage
+(local stages = €0, since they run on the user's own hardware).
+- Per-stage cost model (per 1 min of finished video):
+  - **Video i2v** (the dominant cost): ~60s of clips per minute × the provider's per-second rate
+    (e.g. Kling). Half-known already — `cost.ts` tracks real spend after a render; reuse those rates.
+  - **Keyframes**: ~(scenes per minute) × per-image price of the active image model.
+  - **LLM** (story + shot list): ~tokens per render × the model's input/output price (small).
+  - **STT**: per-song flat (Replicate WhisperX), amortised over the song length (small).
+  - **VLM / moderation**: per cast/upload, not per video minute → show separately or omit.
+- Sum the stages currently set to **cloud**; show "€0 (fully local)" when every stage is local.
+- Source rates from a small `pricing` table (cents per second / per image / per Mtoken) keyed by model
+  slug, with sensible defaults + an option to edit (prices drift). Recompute on any backend/model change.
+- It's an **estimate** — label it; the post-render `cost.ts` total is the real figure.
+
 ## Also next
-- **Settings polish**: per-stage model picker + a "test key" button; show estimated cost before render.
+- **Settings polish**: per-stage model picker + a "test key" button.
 - **More i2v models**: expose cheaper / alternative image-to-video models cleanly (keep `genVideo()`
   model-agnostic).
 - **Landing page**: GitHub Pages site (built; goes live once the repo is public).
