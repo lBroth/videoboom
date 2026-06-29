@@ -98,3 +98,40 @@ per-clip reload. New sidecar endpoints behind the same GPU lock: `/llm`, `/keyfr
 ### Caveats
 Huge downloads (Wan ~118GB, Qwen ~19GB, FLUX ~10GB, whisper ~2GB); slow (video
 dominates); quality below the cloud frontier.
+
+> **Status:** the MLX (Apple Silicon) version of all of the above is **implemented** —
+> model-agnostic sidecar (`/i2v /stt /llm /vlm /keyframe`), ModelManager, per-stage
+> dispatch, download-gated Settings toggles + render guards, capability gate.
+
+---
+
+## TODO — CUDA backend (Windows / Linux, NVIDIA)
+
+MLX is Apple-only. Windows/Linux run the same pipeline on **NVIDIA CUDA**, using **direct
+Python libraries** — explicitly **no Ollama, no ComfyUI** (those are just wrappers; the Mac
+sidecar already imports mlx libs in-process, and the CUDA sidecar mirrors that with torch).
+The whole framework (model-agnostic sidecar, ModelManager, per-stage dispatch, download
+gating, Settings UI, capability gate) is **reused as-is** — only the handler implementations
+change from mlx to torch.
+
+### Per-stage libraries (direct, in-process)
+| Stage | CUDA library |
+|---|---|
+| Video i2v | diffusers `WanImageToVideoPipeline` (Wan 2.2; FP8/GGUF) — faster on CUDA than MLX |
+| Keyframe | diffusers `FluxPipeline` / `FluxKontextPipeline` |
+| LLM | transformers `AutoModelForCausalLM`, or **llama-cpp-python** (GGUF — the lib Ollama wraps, used directly) |
+| VLM | transformers (gemma-3 vision) |
+| STT | faster-whisper / whisperx (already CUDA-native) |
+
+### Wiring
+- `VB_LOCAL_DEVICE = mlx | cuda`, auto-detected (Apple Silicon → mlx, NVIDIA present → cuda);
+  each handler imports the matching backend. Could split `local/` into `backends/mlx` +
+  `backends/cuda` sharing one `server.py` + `manager.py`.
+- ModelManager unload on CUDA = drop ref + `gc.collect()` + `torch.cuda.empty_cache()`.
+- `localCapabilities()` extended: detect NVIDIA + VRAM via `nvidia-smi
+  --query-gpu=memory.total`; supported = (Apple Silicon ≥32GB) OR (NVIDIA ≥16GB VRAM).
+
+### Minimum hardware (NVIDIA — video Wan 14B is the bottleneck)
+- **≥16GB VRAM** (FP8/Q4 + 480p) minimum; **24GB recommended** (RTX 3090/4090).
+- 12GB only with heavy offload → very slow. System RAM 32GB+, fast SSD.
+- AMD ROCm = immature → skipped for now. No strong GPU → stay on cloud (the BYOK default).
