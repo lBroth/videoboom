@@ -7,9 +7,17 @@ import { env, envInt } from './config';
 import { vW, vH } from './ffmpeg';
 import { ensureSidecar, sidecarPost, readMarker } from './sidecar';
 
-/** Converted MLX model dir: explicit override, else the path setup.sh wrote to local/.model-path. */
+/** Which local i2v model: '5b' = Wan2.2-TI2V-5B (default — ~2.6x faster than the 14B at 480p, single-DiT,
+ * x64 VAE, native ~10 steps, no Lightning LoRA), '14b' = Wan2.2-I2V-A14B + Lightning 4-step. */
+function videoModel(): '5b' | '14b' {
+  return env('VB_LOCAL_VIDEO_MODEL', '5b') === '14b' ? '14b' : '5b';
+}
+
+/** Converted MLX model dir for the selected model (explicit override, else the setup.sh marker). */
 function modelDir(): string {
-  return env('VB_LOCAL_WAN_DIR') || readMarker('.model-path');
+  return videoModel() === '5b'
+    ? env('VB_LOCAL_WAN_5B_DIR') || readMarker('.model-path-5b')
+    : env('VB_LOCAL_WAN_DIR') || readMarker('.model-path');
 }
 
 /** Wan2.2-Lightning 4-step LoRA dir (high/low noise safetensors): explicit override, else .lightning-dir.
@@ -25,40 +33,45 @@ function lightningLoras(): { high: string; low: string } | null {
 /** Generate one clip locally. Mirrors providers.genVideo's [ok, err] contract. Wan i2v is conditioned on a
  * single start frame, so the cloud path's last-frame morph is not used here. */
 export async function genVideoLocal(img: string, prompt: string, outMp4: string, seconds: number, seed = 42): Promise<[boolean, string]> {
+  const is5b = videoModel() === '5b';
   const md = modelDir();
   if (!md || !fs.existsSync(md)) {
-    return [false, 'Local Wan 2.2 model not found. Run `bash local/setup.sh` (or set VB_LOCAL_WAN_DIR).'];
+    return [false, 'Local video model not found. Run `bash local/setup.sh` (or set VB_LOCAL_WAN_5B_DIR / VB_LOCAL_WAN_DIR).'];
   }
   try {
     await ensureSidecar();
   } catch (e: any) {
     return [false, e?.message || String(e)];
   }
-  const stepsRaw = env('VB_LOCAL_WAN_STEPS');
   const payload: Record<string, unknown> = {
     model_dir: md,
     image: img,
     prompt,
     out: outMp4,
     seconds,
-    fps: envInt('VB_LOCAL_WAN_FPS', 16),
+    // 5B is native 24fps; the 14B path is budgeted at 16fps. Frame cap keeps the VAE-decode peak in 48GB.
+    fps: envInt('VB_LOCAL_WAN_FPS', is5b ? 24 : 16),
     width: vW(),
     height: vH(),
     seed: Math.trunc(seed),
-    max_frames: envInt('VB_LOCAL_MAX_FRAMES', 37),
+    max_frames: envInt('VB_LOCAL_MAX_FRAMES', is5b ? 57 : 37),
     min_frames: envInt('VB_LOCAL_MIN_FRAMES', 21),
   };
-  // Quality: 'fast' (default) uses the Wan2.2-Lightning 4-step LoRA when installed (4 steps + CFG off —
-  // fast, keeps most quality); 'hd' forces the full 40-step pass with no LoRA. The sidecar derives
-  // steps=4/guide=1 automatically when LoRA paths are present.
-  if (env('VB_LOCAL_QUALITY', 'fast') !== 'hd') {
-    const ln = lightningLoras();
-    if (ln) {
-      payload.lora_high = ln.high;
-      payload.lora_low = ln.low;
+  if (is5b) {
+    // Single-DiT 5B: no Lightning LoRA (incompatible); run native steps (10 ≈ best speed/quality) with the
+    // model's config CFG (guide 5). Override with VB_LOCAL_WAN_STEPS.
+    payload.steps = envInt('VB_LOCAL_WAN_STEPS', 10);
+  } else {
+    // 14B 'fast' uses the Wan2.2-Lightning 4-step LoRA (4 steps + CFG off); 'hd' = full 40-step, no LoRA.
+    if (env('VB_LOCAL_QUALITY', 'fast') !== 'hd') {
+      const ln = lightningLoras();
+      if (ln) {
+        payload.lora_high = ln.high;
+        payload.lora_low = ln.low;
+      }
     }
+    if (env('VB_LOCAL_WAN_STEPS')) payload.steps = envInt('VB_LOCAL_WAN_STEPS', 40);
   }
-  if (stepsRaw) payload.steps = envInt('VB_LOCAL_WAN_STEPS', 40); // explicit override wins over the preset above
   const deadline = envInt('VB_LOCAL_DEADLINE_SEC', 1800) * 1000;
   try {
     const r = await sidecarPost('/i2v', payload, deadline);

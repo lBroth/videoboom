@@ -83,13 +83,11 @@ export function settingsEnv(): Record<string, string> {
     const hd = s.localQuality === 'hd';
     env.VB_VIDEO_BACKEND = 'local';
     env.VB_LOCAL_QUALITY = hd ? 'hd' : 'fast';
-    // 48GB unified memory ceiling: attention is O(seq_len²), so frames×resolution is hard-capped. 480p/37f
-    // is the proven-stable point; 49f or 720p hit Metal "Insufficient Memory". Both modes render 480p/37f
-    // (longer scenes get time-stretched to their window by fitToWindow); fast = Lightning 4-step, hd = full
-    // 40-step (sharper, slower). Raise VB_LOCAL_MAX_FRAMES / set 720p via env only on a bigger-memory Mac.
+    // 480p (832×480). The default local i2v model is Wan2.2-TI2V-5B (~2.6x faster than the 14B, native
+    // ~10 steps); per-model frame caps live in localVideo (5B=57 @24fps ≈ 2.4s, 14B=37 @16fps). Keep 480p
+    // for the 5B's ~49GB peak; 720p risks OOM on 48GB. fast/hd only changes the 14B path (Lightning vs 40-step).
     env.VB_W = '832';
     env.VB_H = '480';
-    env.VB_LOCAL_MAX_FRAMES = '37';
     env.VB_WORKERS = '1';
     if (s.localWanDir) env.VB_LOCAL_WAN_DIR = s.localWanDir;
   }
