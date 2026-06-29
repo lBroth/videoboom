@@ -15,6 +15,12 @@ __pycache__/
 sidecar/build/
 sidecar/dist/
 
+# local-model sidecar: venv, downloaded/converted weights, and the path marker (code is tracked)
+local/.venv/
+local/models/
+local/.model-path
+local/.lightning-dir
+
 # bundled sidecar (built per-OS by scripts/build-sidecar.sh)
 resources/sidecar
 

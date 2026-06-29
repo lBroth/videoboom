@@ -19,6 +19,9 @@ export interface Scene {
 export interface Settings {
   storyModel: string; llmModel: string; keyframeModel: string; videoModel: string;
   vlmModel: string; moderationModel: string; sttLang: string; workers: number;
+  videoBackend: 'cloud' | 'local'; localQuality: 'fast' | 'hd'; localWanDir: string;
+  sttBackend: 'cloud' | 'local'; llmBackend: 'cloud' | 'local'; vlmBackend: 'cloud' | 'local';
+  keyframeBackend: 'cloud' | 'local';
 }
 export interface SidecarEvent {
   event: string; stage?: string; total?: number; index?: number; status?: string;

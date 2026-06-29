@@ -25,3 +25,10 @@ export function envBool(k: string, d = false): boolean {
   if (!v) return d;
   return v === '1' || v === 'true' || v === 'yes';
 }
+
+/** Per-stage backend: 'cloud' (default) or 'local'. Read as VB_<STAGE>_BACKEND, e.g. stageBackend('STT')
+ * -> VB_STT_BACKEND. Lets each pipeline stage route cloud<->local independently; the pipeline code itself
+ * is unchanged — only the provider functions branch on this. */
+export function stageBackend(stage: string, d = 'cloud'): string {
+  return env(`VB_${stage}_BACKEND`, d);
+}

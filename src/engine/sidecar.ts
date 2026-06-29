@@ -1,0 +1,112 @@
+// Shared client for the local-model Python sidecar (local/server.py). One warm process serves every
+// on-device stage (i2v, STT, LLM, VLM, keyframes) over localhost; a ModelManager inside it keeps a single
+// model resident and unloads it when another stage needs the GPU. Each request carries the model path(s)
+// it needs, so this client is model-agnostic — per-stage callers (localVideo.ts, localStt.ts, …) build
+// their own payloads and reuse ensureSidecar() + sidecarPost() here. No duplication across stages.
+import http from 'node:http';
+import path from 'node:path';
+import fs from 'node:fs';
+import { spawn, ChildProcess } from 'node:child_process';
+import { env, envInt } from './config';
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+export function localDir(): string {
+  return env('VB_LOCAL_DIR', path.resolve(process.cwd(), 'local'));
+}
+export function sidecarPort(): number {
+  return envInt('VB_LOCAL_PORT', 8765);
+}
+export function localPython(): string {
+  return env('VB_LOCAL_PYTHON', path.join(localDir(), '.venv', 'bin', 'python'));
+}
+/** Read a path marker setup.sh wrote under local/ (e.g. .model-path, .lightning-dir), '' if absent. */
+export function readMarker(name: string): string {
+  try {
+    return fs.readFileSync(path.join(localDir(), name), 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+
+function ping(timeoutMs = 1500): Promise<boolean> {
+  return new Promise((resolve) => {
+    const req = http.get({ host: '127.0.0.1', port: sidecarPort(), path: '/health', timeout: timeoutMs }, (res) => {
+      res.resume();
+      resolve(res.statusCode === 200);
+    });
+    req.on('error', () => resolve(false));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(false);
+    });
+  });
+}
+
+let server: ChildProcess | null = null;
+let starting: Promise<void> | null = null;
+
+/** Ensure the sidecar process is up: reuse a running one, else spawn `server.py` and wait for /health.
+ * Model-agnostic — the per-request payload names the model. Throws if the venv isn't installed. */
+export async function ensureSidecar(): Promise<void> {
+  if (await ping()) return;
+  if (starting) return starting;
+  starting = (async () => {
+    const py = localPython();
+    if (!fs.existsSync(py)) {
+      throw new Error('Local model sidecar is not installed. Run `bash local/setup.sh` first.');
+    }
+    const dir = localDir();
+    server = spawn(py, [path.join(dir, 'server.py'), '--port', String(sidecarPort())], {
+      cwd: dir,
+      stdio: ['ignore', 'inherit', 'inherit'], // sidecar logs flow to the app's stdout/stderr
+    });
+    server.on('exit', () => {
+      server = null;
+    });
+    // /health answers as soon as the HTTP server binds (weights load lazily per request), so this is quick.
+    const deadline = Date.now() + envInt('VB_LOCAL_START_SEC', 120) * 1000;
+    while (Date.now() < deadline) {
+      if (await ping()) return;
+      if (!server) throw new Error('Local model sidecar exited on startup (see logs above).');
+      await sleep(500);
+    }
+    throw new Error('Local model sidecar did not become ready in time.');
+  })().finally(() => {
+    starting = null;
+  });
+  return starting;
+}
+
+/** POST a JSON job to the sidecar and return its parsed JSON reply. Long timeouts are expected (a clip is
+ * minutes). Rejects on socket/timeout errors; resolves with the body (which may carry {ok:false,error}). */
+export function sidecarPost(routePath: string, payload: unknown, timeoutMs: number): Promise<any> {
+  const body = JSON.stringify(payload);
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        host: '127.0.0.1',
+        port: sidecarPort(),
+        path: routePath,
+        method: 'POST',
+        timeout: timeoutMs,
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (c) => (data += c));
+        res.on('end', () => {
+          try {
+            resolve(data ? JSON.parse(data) : {});
+          } catch {
+            resolve({ ok: false, error: `bad sidecar response (${res.statusCode})` });
+          }
+        });
+      },
+    );
+    req.on('error', reject);
+    req.on('timeout', () => req.destroy(new Error(`sidecar ${routePath} timed out`)));
+    req.write(body);
+    req.end();
+  });
+}

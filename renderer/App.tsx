@@ -432,6 +432,12 @@ const KEY_FIELDS: { name: string; label: string; hint: string; url: string; help
   { name: 'replicate', label: 'Replicate API token', hint: 'required — lyric timing (WhisperX)', url: 'https://replicate.com/account/api-tokens',
     help: 'Sign in with GitHub, open Account → API tokens, and copy your token. Used for WhisperX forced-aligned word timing — needed to read the lyrics and sync scenes.' },
 ];
+const LOCAL_STAGES: { key: keyof Settings; label: string; cloud: string; local: string }[] = [
+  { key: 'sttBackend', label: 'Lyric timing (STT)', cloud: 'WhisperX · Replicate', local: 'whisper · mlx' },
+  { key: 'llmBackend', label: 'Story & shot-list (LLM)', cloud: 'Claude / Gemini', local: 'Qwen3 · mlx-lm' },
+  { key: 'vlmBackend', label: 'Face caption + safety (VLM)', cloud: 'gemma · cloud', local: 'gemma-3 · mlx-vlm' },
+  { key: 'keyframeBackend', label: 'Keyframe images', cloud: 'gemini-image', local: 'FLUX · mflux' },
+];
 const MODEL_FIELDS: { key: keyof Settings; label: string }[] = [
   { key: 'storyModel', label: 'Story model (LLM)' },
   { key: 'llmModel', label: 'Shot-list model (LLM)' },
@@ -455,6 +461,60 @@ function SettingsScreen() {
         <p className="text-sm text-slate-400 -mt-1">Videoboom is bring-your-own-key: it calls the providers directly with <i>your</i> keys, so you pay them at cost — no markup. Keys are encrypted with your OS keychain and never leave this machine. You need <b className="text-slate-300">OpenRouter</b> (the essentials) and ideally <b className="text-slate-300">Replicate</b> (for accurate lyric timing).</p>
         {KEY_FIELDS.map((f) => <KeyRow key={f.name} f={f} set={!!keys.data?.[f.name]} onSaved={() => qc.invalidateQueries({ queryKey: ['keys'] })} />)}
       </Card>
+
+      {settings.data && (
+        <Card className="p-5 space-y-4">
+          <div className="flex items-center gap-2"><Film className="w-5 h-5 text-violet-300" /><h2 className="font-semibold text-slate-100">Video backend</h2></div>
+          <p className="text-sm text-slate-400 -mt-1">Where image-to-video runs. <b className="text-slate-300">Cloud</b> is fast and uses your OpenRouter key. <b className="text-slate-300">Local</b> runs Wan 2.2 on this Mac (MLX) — no key, no cost, but slow (minutes per clip) and needs a one-time setup.</p>
+          <div className="grid grid-cols-2 gap-2">
+            {(['cloud', 'local'] as const).map((b) => (
+              <button key={b} onClick={() => vb.setSettings({ videoBackend: b }).then(() => qc.invalidateQueries({ queryKey: ['settings'] }))}
+                className={cx('rounded-xl border px-4 py-3 text-left transition-colors',
+                  settings.data!.videoBackend === b ? 'border-violet-400/60 bg-violet-500/10 text-slate-100' : 'border-white/10 hover:bg-white/[0.03] text-slate-300')}>
+                <div className="font-medium">{b === 'cloud' ? 'Cloud (OpenRouter)' : 'Local (Wan 2.2 MLX)'}</div>
+                <div className="text-xs text-slate-500 mt-0.5">{b === 'cloud' ? 'Fast · pay providers at cost' : 'On-device · free · 720p · slow'}</div>
+              </button>
+            ))}
+          </div>
+          <div className="border-t border-white/5 pt-3 space-y-3">
+            <p className="text-xs text-slate-400">On-device stages (MLX). Local = free + offline; first use downloads the model. Needs <code className="text-slate-300">bash local/setup.sh</code> + a 48GB+ Apple Silicon Mac.</p>
+            {LOCAL_STAGES.map((st) => (
+              <Field key={st.key} label={st.label}>
+                <div className="grid grid-cols-2 gap-2">
+                  {(['cloud', 'local'] as const).map((b) => (
+                    <button key={b} onClick={() => vb.setSettings({ [st.key]: b } as Partial<Settings>).then(() => qc.invalidateQueries({ queryKey: ['settings'] }))}
+                      className={cx('rounded-lg border px-3 py-2 text-left transition-colors',
+                        settings.data![st.key] === b ? 'border-violet-400/60 bg-violet-500/10 text-slate-100' : 'border-white/10 hover:bg-white/[0.03] text-slate-300')}>
+                      <div className="text-sm font-medium">{b === 'cloud' ? 'Cloud' : 'Local'}</div>
+                      <div className="text-xs text-slate-500">{b === 'cloud' ? st.cloud : st.local}</div>
+                    </button>
+                  ))}
+                </div>
+              </Field>
+            ))}
+          </div>
+          {settings.data.videoBackend === 'local' && (
+            <div className="space-y-3 border-t border-white/5 pt-3">
+              <p className="text-xs text-slate-400">Run <code className="text-slate-300">bash local/setup.sh</code> once to install mlx-video and download + convert the model. The app auto-finds it; override the model dir below only if needed.</p>
+              <Field label="Speed / quality">
+                <div className="grid grid-cols-2 gap-2">
+                  {([['fast', 'Fast · 480p', 'Lightning 4-step · ~3 min/clip'], ['hd', 'HD · 720p', 'full 40-step · ~9 min/clip']] as const).map(([q, t, sub]) => (
+                    <button key={q} onClick={() => vb.setSettings({ localQuality: q }).then(() => qc.invalidateQueries({ queryKey: ['settings'] }))}
+                      className={cx('rounded-lg border px-3 py-2 text-left transition-colors',
+                        settings.data!.localQuality === q ? 'border-violet-400/60 bg-violet-500/10 text-slate-100' : 'border-white/10 hover:bg-white/[0.03] text-slate-300')}>
+                      <div className="text-sm font-medium">{t}</div><div className="text-xs text-slate-500">{sub}</div>
+                    </button>
+                  ))}
+                </div>
+              </Field>
+              <Field label="Model dir override" hint="blank = local/.model-path">
+                <input className={inputCls} defaultValue={settings.data.localWanDir} placeholder="/Volumes/SSD/…/Wan2.2-I2V-A14B-MLX-Q4"
+                  onBlur={(e) => vb.setSettings({ localWanDir: e.target.value.trim() }).then(() => qc.invalidateQueries({ queryKey: ['settings'] }))} />
+              </Field>
+            </div>
+          )}
+        </Card>
+      )}
 
       <Card className="overflow-hidden">
         <button onClick={() => setAdv((v) => !v)} className="w-full flex items-center gap-2 p-5 text-left hover:bg-white/[0.03] transition-colors">

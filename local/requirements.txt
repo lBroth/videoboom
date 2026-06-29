@@ -1,0 +1,10 @@
+# Videoboom local-model sidecar (Apple Silicon, MLX). Installed into local/.venv by setup.sh.
+# mlx-video pulls mlx, transformers, safetensors, numpy, pillow, tqdm, imageio, etc.
+mlx-video @ git+https://github.com/Blaizzy/mlx-video.git
+huggingface_hub
+# torch is needed ONLY at convert time, to read the Wan .pth files (T5 encoder + VAE).
+# Without it the conversion crashes before the quantize step and leaves the transformers in bf16.
+torch
+# local stages: STT (whisper), keyframes (mflux FLUX). mlx-lm (LLM) + mlx-vlm (VLM) ship with mlx-video.
+mlx-whisper
+mflux

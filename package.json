@@ -19,6 +19,7 @@
     "start": "electron .",
     "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:main\" \"wait-on tcp:5273 && electron .\"",
     "dist": "npm run build && electron-builder --publish never",
+    "local:setup": "bash local/setup.sh",
     "typecheck": "tsc --noEmit",
     "test:unit": "tsx --test test/segment.test.ts",
     "test": "npm run typecheck && npm run test:unit"

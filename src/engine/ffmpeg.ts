@@ -15,8 +15,11 @@ function bin(p: string | null | undefined, fallback: string): string {
 const FFMPEG = bin(ffmpegStatic as unknown as string, 'ffmpeg');
 const FFPROBE = bin(ffprobeStatic?.path, 'ffprobe');
 
-export const W = envInt('VB_W', 768);
-export const H = envInt('VB_H', 432);
+// Render resolution — read live (not a load-time const) so a per-run setting injection (e.g. the local
+// 720p backend setting VB_W=1280/VB_H=704) takes effect. Used by stillClip + the failed-scene color fill;
+// the local Wan backend also generates at exactly these dims so every clip + fill shares one size.
+export const vW = (): number => envInt('VB_W', 768);
+export const vH = (): number => envInt('VB_H', 432);
 export const FPS = 24;
 
 interface RunOut {
@@ -112,7 +115,8 @@ export async function stillClip(image: string, startSec: number, endSec: number,
   fps = Math.trunc(fps || FPS);
   const n = Math.max(1, Math.round(Number(endSec) * fps) - Math.round(Number(startSec) * fps));
   const target = n / fps;
-  const base = `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,fps=${fps}`;
+  const w = vW(), h = vH();
+  const base = `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},setsar=1,fps=${fps}`;
   let chain = base;
   if (label && FONT) {
     const txt =
@@ -125,7 +129,7 @@ export async function stillClip(image: string, startSec: number, endSec: number,
   const src =
     image && fileExists(image)
       ? ['-loop', '1', '-t', target.toFixed(3), '-i', image]
-      : ['-f', 'lavfi', '-i', `color=c=0x111418:s=${W}x${H}:r=${fps}`, '-t', target.toFixed(3)];
+      : ['-f', 'lavfi', '-i', `color=c=0x111418:s=${w}x${h}:r=${fps}`, '-t', target.toFixed(3)];
   await ffmpeg([...src, '-vf', chain, '-frames:v', String(n), '-pix_fmt', 'yuv420p', '-an', out]);
   // The drawtext watermark needs a font + a freetype-enabled ffmpeg; if that combo isn't available the
   // render produces nothing. Fall back to the plain fill so a failed-scene slot is NEVER itself empty.

@@ -5,8 +5,9 @@
 import { env, envInt } from './config';
 import { costTotal } from './cost';
 import * as S from './storage';
-import { FPS, W, H, probeDuration, toPng, putThumb, fitToWindow, stillClip, ffmpeg, toWav } from './ffmpeg';
+import { FPS, probeDuration, toPng, putThumb, fitToWindow, stillClip, ffmpeg, toWav } from './ffmpeg';
 import * as P from './providers';
+import { genVideoLocal } from './localVideo';
 import { segmentSong, windowVocalCoverage, windowEnergy } from './segment';
 
 export type Emit = (e: any) => void;
@@ -165,7 +166,15 @@ async function storyboard(pid: string, emit: Emit, preview: boolean): Promise<vo
     S.updateProject(pid, { status: 'failed', stage: 'failed', error: "Could not read the song's words (no audible vocals)." });
     throw new Error('no lyrics');
   }
-  const segs = segmentSong(words, dur).slice(0, MAX_SCENES);
+  // Local Wan caps at ~37 frames (memory), so a clip's native length is maxFrames/fps (~2.3s). Cut scenes
+  // to roughly that so each renders at real speed — no time-stretch / slow-motion — and shots land at a
+  // proper music-video pace. Cloud keeps the original 6s phrasing.
+  let segOpts = undefined;
+  if (env('VB_VIDEO_BACKEND', 'cloud') === 'local') {
+    const nativeSec = envInt('VB_LOCAL_MAX_FRAMES', 37) / Math.max(1, envInt('VB_LOCAL_WAN_FPS', 16));
+    segOpts = { target: nativeSec, maxSec: nativeSec * 1.15, minSec: nativeSec * 0.6 };
+  }
+  const segs = segmentSong(words, dur, segOpts).slice(0, MAX_SCENES);
   const n = segs.length;
   const renderTargetN = previewTarget(n, preview);
   const wins: [number, number][] = segs.map((s) => [Number(s[0]), Number(s[1])]);
@@ -272,7 +281,13 @@ async function renderClip(pid: string, k: number, p: any, kfFirst: string, kfLas
   const motion = P.MOTION[sc.energy || 'medium'] || P.MOTION.medium;
   const vmodel = p.videoModel || null;
   const raw = S.tmp(`raw_${pid}_${k}.mp4`);
-  const [ok, err] = await P.genVideo(kfFirst, `${sc.prompt || ''}, ${motion}, cinematic`, raw, wdur, kfLast, vmodel, seed);
+  const clipPrompt = `${sc.prompt || ''}, ${motion}, cinematic`;
+  // Local Wan 2.2 MLX (on-device) vs cloud i2v (OpenRouter). Local is single-frame conditioned, so the
+  // cloud path's last-frame morph (kfLast) is unused on the local backend.
+  const [ok, err] =
+    env('VB_VIDEO_BACKEND', 'cloud') === 'local'
+      ? await genVideoLocal(kfFirst, clipPrompt, raw, wdur, seed)
+      : await P.genVideo(kfFirst, clipPrompt, raw, wdur, kfLast, vmodel, seed);
   if (!ok) {
     const reason = P.isContentBlock(err) ? "This scene was blocked by the model's safety filter." : `Scene render failed: ${(err || '').slice(0, 160)}`;
     putSceneMerged(pid, k, sc, { status: 'failed', error: reason });

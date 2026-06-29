@@ -2,7 +2,7 @@
 // portrait captioning, moderation, and image-to-video; Replicate (WhisperX forced alignment) for accurate
 // word timings. Ported from the proven pipeline core; algorithms unchanged.
 import fs from 'node:fs';
-import { env, envBool } from './config';
+import { env, envBool, stageBackend } from './config';
 import { costAdd, orCost } from './cost';
 import { tmp } from './storage';
 import { toMp3_16k, moderationUri } from './ffmpeg';
@@ -54,6 +54,10 @@ function fileExists(p: string): boolean {
 
 // ── LLM ─────────────────────────────────────────────────────────────────────────
 export async function llmComplete(system: string, user: string, maxTokens = 2000, model?: string, temperature = 0.9): Promise<string> {
+  if (stageBackend('LLM') === 'local') {
+    const { llmCompleteLocal } = await import('./localLlm');
+    return llmCompleteLocal(system, user, maxTokens, temperature);
+  }
   model = model || env('VB_LLM_MODEL', 'google/gemini-3.5-flash');
   const body = {
     model,
@@ -78,6 +82,10 @@ export async function llmComplete(system: string, user: string, maxTokens = 2000
 }
 
 export async function llmJson(system: string, user: string, schema: any, model?: string, maxTokens = 4000, temperature = 0.7): Promise<any | null> {
+  if (stageBackend('LLM') === 'local') {
+    const { llmJsonLocal } = await import('./localLlm');
+    return llmJsonLocal(system, user, schema, maxTokens, temperature);
+  }
   model = model || env('VB_LLM_MODEL', 'google/gemini-3.5-flash');
   const body = {
     model,
@@ -230,6 +238,18 @@ async function transcribeWhisperx(audioPath: string): Promise<Word[] | null> {
 }
 
 export async function transcribeWords(audioPath: string): Promise<Word[]> {
+  // On-device whisper (mlx) vs cloud WhisperX forced-alignment (Replicate). Same Word[] out either way.
+  if (stageBackend('STT') === 'local') {
+    try {
+      const { transcribeWordsLocal } = await import('./localStt');
+      const w = await transcribeWordsLocal(audioPath);
+      if (w.length) return w;
+      console.error('local STT returned no words');
+    } catch (e) {
+      console.error('local STT failed:', String(e));
+    }
+    return [];
+  }
   const wx = await transcribeWhisperx(audioPath);
   if (wx) return wx;
   console.error('whisperx transcription unavailable (check the Replicate token)');
@@ -241,6 +261,10 @@ export const TOON_STYLE =
   '3D animated movie still, Pixar/DreamWorks style, vibrant stylized cartoon animation, soft toon shading, expressive cartoon features, clearly animated and NOT photorealistic';
 
 export async function cloudKeyframe(prompt: string, outPath: string, refs: [string, string][] = [], toon = false): Promise<boolean> {
+  if (stageBackend('KEYFRAME') === 'local') {
+    const { keyframeLocal } = await import('./localKeyframe');
+    return keyframeLocal(prompt, outPath, refs, toon);
+  }
   const model = env('VB_KEYFRAME_MODEL', 'google/gemini-3.1-flash-image');
   const vstyle = toon ? TOON_STYLE : env('VB_VISUAL_STYLE', '');
   const nosign =
@@ -292,6 +316,10 @@ export async function cloudKeyframe(prompt: string, outPath: string, refs: [stri
 }
 
 export async function vlmCaption(imgPath: string): Promise<string> {
+  if (stageBackend('VLM') === 'local') {
+    const { vlmCaptionLocal } = await import('./localVlm');
+    return vlmCaptionLocal(imgPath);
+  }
   const model = env('VB_VLM_MODEL', 'google/gemma-3-12b-it');
   let uri: string;
   try {
@@ -315,6 +343,10 @@ export async function vlmCaption(imgPath: string): Promise<string> {
 
 /** Safety check on an uploaded photo via an OpenRouter VISION model. Returns [safe, codes]. Fails OPEN. */
 export async function moderateImage(path: string): Promise<[boolean, string[]]> {
+  if (stageBackend('VLM') === 'local') {
+    const { moderateImageLocal } = await import('./localVlm');
+    return moderateImageLocal(path);
+  }
   if (!env('VB_OPENROUTER_API_KEY')) return [true, []];
   let uri: string;
   try {
