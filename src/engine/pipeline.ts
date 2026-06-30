@@ -437,7 +437,8 @@ async function renderScenes(pid: string, emit: Emit, cancelled: Cancelled): Prom
     .map((s) => Number(s.index))
     .sort((a, b) => a - b);
   if (!toRender.length) return assemble(pid, emit);
-  S.updateProject(pid, { status: 'rendering', stage: 'rendering', previewScenes: done.size + toRender.length, renderStartedAt: Date.now() / 1000 });
+  // Reset progress to the keyframe-phase baseline so a resume/re-render doesn't show the previous run's 100%.
+  S.updateProject(pid, { status: 'rendering', stage: 'rendering', progress: 0.3, previewScenes: done.size + toRender.length, renderStartedAt: Date.now() / 1000 });
 
   // Local Wan backends render as a (mostly) continuous chain — the LLM marks each scene cut/continue, a
   // 'continue' scene starts from the previous scene's last frame, an anti-drift cap forces a fresh keyframe.
@@ -458,10 +459,14 @@ async function renderScenes(pid: string, emit: Emit, cancelled: Cancelled): Prom
   );
   emit({ event: 'stage', stage: 'keyframes', total: needed.length });
   const kfPaths: Record<number, string | null> = {};
+  let kfDone = 0;
   await mapPool(needed, workers(), async (k) => {
     checkCancel(cancelled);
     const path = await buildKeyframe(pid, k, p, toon);
     kfPaths[k] = path;
+    kfDone++;
+    // Keyframe phase fills 0.3 -> 0.5 so the bar moves while keyframes generate (the clip pass takes 0.5->1).
+    S.updateProject(pid, { progress: Math.round((0.3 + (0.2 * kfDone) / Math.max(1, needed.length)) * 1000) / 1000 });
     emit({ event: 'keyframe', index: k, ok: Boolean(path) });
   });
 
@@ -480,7 +485,8 @@ async function renderScenes(pid: string, emit: Emit, cancelled: Cancelled): Prom
     checkCancel(cancelled);
     await renderClip(pid, k, p, kfPaths[k]!, kfPaths[k + 1] || null, emit);
     const d = S.listScenes(pid).filter((s) => s.status === 'done').length;
-    S.updateProject(pid, { scenesDone: d, progress: Math.round((0.3 + (0.6 * Math.min(d, target)) / Math.max(1, target)) * 1000) / 1000 });
+    // Clip pass fills 0.5 -> 1 (the keyframe pass took 0.3 -> 0.5).
+    S.updateProject(pid, { scenesDone: d, progress: Math.round((0.5 + (0.5 * Math.min(d, target)) / Math.max(1, target)) * 1000) / 1000 });
   });
 
   return assemble(pid, emit);
