@@ -35,7 +35,10 @@ export async function keyframeLocal(prompt: string, outPath: string, refs: [stri
     seed: seedFor(outPath),
     model: env('VB_LOCAL_KEYFRAME_MODEL', 'dhairyashil/FLUX.1-schnell-mflux-4bit'), // ungated mirror; BFL schnell is HF-gated
   };
-  if (ref) payload.ref = ref;
+  if (ref) {
+    payload.ref = ref;
+    payload.kontext_steps = envInt('VB_LOCAL_KONTEXT_STEPS', 12); // FLUX Kontext: 12 ≈ identity at ~40% less time than 20
+  }
   try {
     const r = await sidecarPost('/keyframe', payload, envInt('VB_LOCAL_KEYFRAME_DEADLINE_SEC', 1200) * 1000);
     return Boolean(r?.ok) && fs.existsSync(outPath) && fs.statSync(outPath).size > 0;

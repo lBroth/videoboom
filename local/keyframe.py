@@ -59,7 +59,7 @@ def run_keyframe(req: dict) -> dict:
             base = req.get("kontext_base", "dev")
             flux = get("kf:kontext:" + name, lambda: _kontext(quant, name, base))
             img = flux.generate_image(
-                seed, req["prompt"], num_inference_steps=int(req.get("kontext_steps", 20)),
+                seed, req["prompt"], num_inference_steps=int(req.get("kontext_steps", 12)),
                 height=h, width=w, guidance=float(req.get("kontext_guidance", 2.5)), image_path=ref,
             )
             mode = "kontext"
