@@ -566,10 +566,10 @@ function SettingsScreen() {
 
           {caps.data.supported && settings.data.videoBackend === 'local' && (
             <div className="space-y-3 border-t border-white/5 pt-3">
-              <p className="text-xs text-slate-400">Run <code className="text-slate-300">bash local/setup.sh</code> once to install mlx-video and download + convert the model. The app auto-finds it; override the model dir below only if needed.</p>
+              <p className="text-xs text-slate-400">Local video model: <b className="text-slate-300">Wan 2.2 TI2V-5B</b> (MLX), 480p. Quality = diffusion steps. (720p needs more than 48GB — keep 480p on this Mac.)</p>
               <Field label="Speed / quality">
                 <div className="grid grid-cols-2 gap-2">
-                  {([['fast', 'Fast · 480p', 'Lightning 4-step · ~3 min/clip'], ['hd', 'HD · 720p', 'full 40-step · ~9 min/clip']] as const).map(([q, t, sub]) => (
+                  {([['fast', 'Fast · 10 steps', '~2 min/clip · 480p'], ['hd', 'Quality · 20 steps', '~4 min/clip · 480p, sharper']] as const).map(([q, t, sub]) => (
                     <button key={q} onClick={() => vb.setSettings({ localQuality: q }).then(() => qc.invalidateQueries({ queryKey: ['settings'] }))}
                       className={cx('rounded-lg border px-3 py-2 text-left transition-colors',
                         settings.data!.localQuality === q ? 'border-violet-400/60 bg-violet-500/10 text-slate-100' : 'border-white/10 hover:bg-white/[0.03] text-slate-300')}>
@@ -578,8 +578,8 @@ function SettingsScreen() {
                   ))}
                 </div>
               </Field>
-              <Field label="Model dir override" hint="blank = local/.model-path">
-                <input className={inputCls} defaultValue={settings.data.localWanDir} placeholder="/Volumes/SSD/…/Wan2.2-I2V-A14B-MLX-Q4"
+              <Field label="Model dir override" hint="blank = local/.model-path-5b">
+                <input className={inputCls} defaultValue={settings.data.localWanDir} placeholder="/Volumes/SSD/…/Wan2.2-TI2V-5B-MLX"
                   onBlur={(e) => vb.setSettings({ localWanDir: e.target.value.trim() }).then(() => qc.invalidateQueries({ queryKey: ['settings'] }))} />
               </Field>
             </div>

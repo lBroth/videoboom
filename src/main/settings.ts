@@ -89,7 +89,13 @@ export function settingsEnv(): Record<string, string> {
     env.VB_W = '832';
     env.VB_H = '480';
     env.VB_WORKERS = '1';
-    if (s.localWanDir) env.VB_LOCAL_WAN_DIR = s.localWanDir;
+    // 5B (default) quality = native diffusion steps: fast=10 (~2min/clip), 'hd' label = 20 (~4min, sharper).
+    // Both 480p; 720p OOMs the 5B on 48GB. (The 14B path, env-only, ignores this and uses Lightning/40-step.)
+    env.VB_LOCAL_WAN_STEPS = hd ? '20' : '10';
+    if (s.localWanDir) {
+      env.VB_LOCAL_WAN_DIR = s.localWanDir;
+      env.VB_LOCAL_WAN_5B_DIR = s.localWanDir;
+    }
   }
   return env;
 }
