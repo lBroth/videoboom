@@ -24,9 +24,16 @@ export async function keyframeLocal(prompt: string, outPath: string, refs: [stri
   }
   const vstyle = toon ? TOON : env('VB_VISUAL_STYLE', '');
   const ref = (refs.find(([p]) => p && fs.existsSync(p)) || [])[0];
-  const text = ref
-    ? `Place this EXACT person into a new cinematic scene, preserving their identity (face, hair, age, build). Scene: ${prompt}. ${vstyle}. ${NOSIGN}`
-    : `${vstyle ? vstyle + '. ' : ''}${prompt}. Cinematic. ${NOSIGN}`;
+  let text: string;
+  if (ref && toon) {
+    // Toon + cast: the reference is a real photo, so "preserve identity" + the photo overpower a trailing
+    // toon tag → keep identity but make the toon style DOMINATE (convert the character to animated).
+    text = `${TOON}. Redraw the SAME character as the reference photo as a fully animated cartoon character — keep their identity (face shape, hair, build, age) but render them clearly stylized/cartoon, NOT photorealistic. Scene: ${prompt}. ${NOSIGN}`;
+  } else if (ref) {
+    text = `Place this EXACT person into a new cinematic scene, preserving their identity (face, hair, age, build). Scene: ${prompt}. ${vstyle}. ${NOSIGN}`;
+  } else {
+    text = `${vstyle ? vstyle + '. ' : ''}${prompt}. Cinematic. ${NOSIGN}`;
+  }
   const payload: Record<string, unknown> = {
     out: outPath,
     prompt: text,

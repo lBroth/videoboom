@@ -376,7 +376,11 @@ async function renderClip(pid: string, k: number, p: any, kfFirst: string, kfLas
   const motion = P.MOTION[sc.energy || 'medium'] || P.MOTION.medium;
   const vmodel = p.videoModel || null;
   const raw = S.tmp(`raw_${pid}_${k}.mp4`);
-  const clipPrompt = `${sc.prompt || ''}, ${motion}, cinematic`;
+  // Carry the look into the video prompt so the model keeps it (esp. toon — otherwise it can drift realistic).
+  const vstyle = p.videoStyle === 'toon'
+    ? '3D animated cartoon, Pixar/DreamWorks style, clearly animated, NOT photorealistic'
+    : env('VB_VISUAL_STYLE', '');
+  const clipPrompt = `${sc.prompt || ''}, ${motion}, cinematic${vstyle ? ', ' + vstyle : ''}`;
   // Three i2v paths: LTX local (first+last-frame morph → smooth flow toward the next keyframe, no sub-clip
   // chaining needed); Wan local (single start frame → chain sub-clips for a long continuous shot); cloud.
   const local = env('VB_VIDEO_BACKEND', 'cloud') === 'local';
