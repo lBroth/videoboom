@@ -47,6 +47,20 @@ for cinematic i2v with realistic people at 480–720p, and fits 48GB. Two additi
 - Not worth it on Mac: CogVideoX / Mochi / SVD / Wan2.2-Animate (obsolete or CUDA-only). "Vidu Q1" (the
   "vubeq" someone mentioned) is closed cloud-only — ignore.
 
+## TODO — format presets (music video / ad-spot / …) instead of free-text style
+Let the Create screen pick a **preconfigured format preset** rather than only typing a free style. Each
+preset is a different *storyboard director* (it swaps the LLM's story-bible + shot-list prompting and the
+pacing), not just a style string — so the same engine (Suno song + local pipeline + Kontext subject
+placement) produces music videos OR ads/spots.
+- **music-video** (today): narrative bible, lyric-synced shots, emotional arc, performer/scenes.
+- **ad / product / spot**: the PRODUCT is the hero — benefit-driven shots, lifestyle context, hero/product
+  close-ups, brand mood, punchier beat-synced cuts, and a closing CTA / logo moment. The "cast" generalises
+  to a **product reference image** placed into scenes via the existing Kontext seam (same mechanism as a face).
+- Future presets: news, shorts/vertical, animation/toon, trailer.
+- Build: a `format` field on the project; branch `storyBible` + `shotListPrompt` (the SYS + rules in
+  pipeline.ts) on it; a preset picker in Create (renderer); generalise cast → "subject" (person | product).
+  ~90% of the infra already exists — the work is the per-format director prompts + UI + product framing.
+
 ## TODO — block re-triggering a generation that's already running
 A render is already one-at-a-time in the backend (the main process refuses a second render / resume /
 scene-regenerate while one is active, returning a clear error — no new job is created). Finish the UX:
