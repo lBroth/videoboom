@@ -55,12 +55,6 @@ scene-regenerate while one is active, returning a clear error — no new job is 
 - If one is somehow triggered anyway, surface the backend's "a render is already in progress" error in the
   UI instead of silently doing nothing.
 
-## TODO — uploaded character photo = use it as-is (don't regenerate)
-When a user **uploads a photo** for a character, use that image directly as the character's primary
-reference (moderate + caption only) — do **not** pass it through the image model to "reproduce the exact
-face", which can alter the identity. Only generate an image when the character is description-only (no
-upload). Today `characterPortrait` regenerates even on upload.
-
 ## TODO — estimated cost / minute in Settings
 Show a live **€/min of video** estimate in Settings, computed from the **active cloud models** per stage
 (local stages = €0, since they run on the user's own hardware).

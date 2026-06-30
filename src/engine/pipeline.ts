@@ -422,20 +422,22 @@ export async function characterPortrait(cid: string, uploadKey: string, prompt: 
       return { characterId: cid, rejected: true, codes };
     }
   }
-  const out = S.tmp(`char_ai_${cid}.png`);
-  const base = 'polished cinematic character portrait, studio lighting, neutral background, head and shoulders, looking at camera, photorealistic, no text or letters';
-  let ok: boolean;
+  let primary: string | null;
+  let aiGenerated: boolean;
   if (src != null) {
-    const desc = prompt ? ', ' + prompt : '';
-    ok = await P.cloudKeyframe(
-      `${base}. This is the SAME person as the reference photo — reproduce their EXACT face (face shape, eyes, nose, mouth, jawline, eyebrows, skin tone), hair, facial hair and apparent age faithfully; do NOT beautify, slim, de-age or alter the face${desc}`,
-      out,
-      [[src, 'this exact person']],
-    );
+    // Uploaded photo → use it EXACTLY as the character (just moderated above + captioned below). Do NOT
+    // run it through the image model: regenerating "the same face" alters the identity. The cast pipeline
+    // (Kontext) places this real photo into scenes, so the user gets the person they uploaded.
+    primary = src;
+    aiGenerated = false;
   } else {
-    ok = await P.cloudKeyframe(`${prompt}, ${base}`, out);
+    // Description-only character → generate a portrait from the text.
+    const base = 'polished cinematic character portrait, studio lighting, neutral background, head and shoulders, looking at camera, photorealistic, no text or letters';
+    const out = S.tmp(`char_ai_${cid}.png`);
+    const ok = await P.cloudKeyframe(`${prompt}, ${base}`, out);
+    primary = ok ? out : null;
+    aiGenerated = ok;
   }
-  const primary = ok ? out : src;
   if (primary == null) {
     S.updateCharacter(cid, { status: 'failed', error: 'Could not create the portrait. Please try a different description.' });
     throw new Error('portrait generation failed');
@@ -446,8 +448,8 @@ export async function characterPortrait(cid: string, uploadKey: string, prompt: 
   S.copyIn(primaryPng, pkey);
   const tkey = await putThumb(primaryPng, `characters/${cid}/primary_thumb.jpg`);
   const images = [pkey, ...((c.images || []) as string[]).filter((i) => i !== pkey)];
-  S.updateCharacter(cid, { images, primaryKey: pkey, thumbKey: tkey, description: caption || c.description || '', status: 'ready', aiGenerated: Boolean(ok), error: '' });
-  return { characterId: cid, primaryKey: pkey, aiGenerated: Boolean(ok) };
+  S.updateCharacter(cid, { images, primaryKey: pkey, thumbKey: tkey, description: caption || c.description || '', status: 'ready', aiGenerated, error: '' });
+  return { characterId: cid, primaryKey: pkey, aiGenerated };
 }
 
 // ── assemble ─────────────────────────────────────────────────────────────────-
