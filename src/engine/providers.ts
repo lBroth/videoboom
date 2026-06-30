@@ -168,13 +168,23 @@ export const SCENES_SCHEMA = {
   },
 };
 
-export async function storyBible(lyrics: string, style: string, dur: number, castBlock = ''): Promise<any | null> {
+export async function storyBible(lyrics: string, style: string, dur: number, castBlock = '', format = 'music-video'): Promise<any | null> {
   const model = env('VB_STORY_MODEL', 'anthropic/claude-sonnet-4.6');
-  const system =
-    'You are a visionary music-video director and screenwriter. You read a song\'s actual lyrics and design the MUSIC VIDEO that tells ITS story: a coherent visual narrative with a clear lead, an emotional arc, and acts that track the song\'s structure. The story MUST come from these specific lyrics — never a generic unrelated story.';
-  const user =
-    `SONG STYLE: ${style}\nDURATION: ~${Math.trunc(dur || 0)}s${castBlock}\n\nLYRICS (the actual sung words):\n${lyrics}\n\n` +
-    'Design the video\'s STORY strictly FROM THESE LYRICS. Find the real narrative / emotional journey (even if metaphorical — translate into a concrete visual story with a faithful lead). If a CAST is given, weave those people in according to their roles (e.g. family) where the lyrics support it. Break it into ACTS following the song sections; each act = one location + one story beat that moves the lead forward + one emotion. CRITICAL: the ACTS must follow the lyrics IN ORDER — the first sung line maps to the first act, the last to the last. Never introduce a later place/life-stage/beat before the lyric that names it (e.g. if the words go nido -> scuola -> lavoro, the acts go in that same order, not work-first). The acts are a TIMELINE of the song, not a thematic summary.';
+  let system: string;
+  let user: string;
+  if (format === 'ad') {
+    system =
+      'You are an award-winning creative director at a top ad agency. You design a short, punchy COMMERCIAL / SPOT built around a PRODUCT (or brand/service), set to this music track. The product is the HERO. Structure: a HOOK that grabs attention -> reveal the product -> show its key BENEFIT and an aspirational lifestyle/feeling -> a clear CALL TO ACTION (the product + brand moment). Modern, desirable, it SELLS.';
+    user =
+      `BRAND / STYLE: ${style}\nSPOT LENGTH: ~${Math.trunc(dur || 0)}s${castBlock}\n\nSOUNDTRACK (the music for the spot${lyrics.trim().length > 40 ? ', with these words' : ' — likely instrumental'}):\n${lyrics || '(instrumental)'}\n\n` +
+      'Design the SPOT. If a SUBJECT/PRODUCT reference is given, IT is the hero — feature it. Break into ACTS that track the music\'s energy: ACT 1 = HOOK (attention-grabbing opening, mood/teaser), ACT 2 = PRODUCT reveal (show it clearly, hero framing), ACT 3 = BENEFIT / lifestyle (the product in use, the feeling/result it delivers, aspirational), ACT 4 = CALL TO ACTION (product + brand close, a confident final beat). Each act = one setting + one beat + one emotion. Keep it punchy and on-brand; this is advertising, not a narrative film.';
+  } else {
+    system =
+      'You are a visionary music-video director and screenwriter. You read a song\'s actual lyrics and design the MUSIC VIDEO that tells ITS story: a coherent visual narrative with a clear lead, an emotional arc, and acts that track the song\'s structure. The story MUST come from these specific lyrics — never a generic unrelated story.';
+    user =
+      `SONG STYLE: ${style}\nDURATION: ~${Math.trunc(dur || 0)}s${castBlock}\n\nLYRICS (the actual sung words):\n${lyrics}\n\n` +
+      'Design the video\'s STORY strictly FROM THESE LYRICS. Find the real narrative / emotional journey (even if metaphorical — translate into a concrete visual story with a faithful lead). If a CAST is given, weave those people in according to their roles (e.g. family) where the lyrics support it. Break it into ACTS following the song sections; each act = one location + one story beat that moves the lead forward + one emotion. CRITICAL: the ACTS must follow the lyrics IN ORDER — the first sung line maps to the first act, the last to the last. Never introduce a later place/life-stage/beat before the lyric that names it (e.g. if the words go nido -> scuola -> lavoro, the acts go in that same order, not work-first). The acts are a TIMELINE of the song, not a thematic summary.';
+  }
   const mt = Math.min(20000, Math.max(2500, Math.trunc((dur || 150) * 35)));
   return llmJson(system, user, BIBLE_SCHEMA, model, mt, 0.5);
 }

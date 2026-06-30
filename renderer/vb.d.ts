@@ -49,7 +49,7 @@ export interface VBApi {
   setSettings(patch: Partial<Settings>): Promise<Settings>;
   pickAudio(): Promise<string | null>;
   pickImage(): Promise<string | null>;
-  createProject(o: { audio: string; name: string; style: string; cast: string; quality: string; mode: string }): Promise<{ projectId: string }>;
+  createProject(o: { audio: string; name: string; style: string; cast: string; quality: string; mode: string; format?: string }): Promise<{ projectId: string }>;
   createCharacter(o: { name: string; style?: string }): Promise<{ characterId: string }>;
   characterPortrait(o: { character: string; photo?: string; prompt?: string }): Promise<Record<string, unknown>>;
   render(pid: string, preview: boolean, regenStory?: boolean): Promise<Record<string, unknown>>;

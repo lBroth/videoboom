@@ -22,7 +22,7 @@ export interface VBApi {
   pickAudio(): Promise<string | null>;
   pickImage(): Promise<string | null>;
   // ops (resolve with the sidecar's terminal result)
-  createProject(o: { audio: string; name: string; style: string; cast: string; quality: string; mode: string }): Promise<any>;
+  createProject(o: { audio: string; name: string; style: string; cast: string; quality: string; mode: string; format?: string }): Promise<any>;
   createCharacter(o: { name: string; style?: string }): Promise<any>;
   characterPortrait(o: { character: string; photo?: string; prompt?: string }): Promise<any>;
   render(pid: string, preview: boolean, regenStory?: boolean): Promise<any>;

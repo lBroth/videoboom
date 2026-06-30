@@ -153,6 +153,7 @@ function CreateVideo({ hasKey, onDone }: { hasKey: boolean; onDone: () => void }
   const { startRender } = useRender();
   const [audio, setAudio] = useState<string>('');
   const [name, setName] = useState('');
+  const [format, setFormat] = useState<'music-video' | 'ad'>('music-video');
   const [style, setStyle] = useState('cinematic photorealistic music video, dramatic lighting, film grade, shallow depth of field');
   const [mode, setMode] = useState<'realistic' | 'toon'>('realistic');
   const [scope, setScope] = useState<'preview' | 'full'>('preview');
@@ -175,16 +176,34 @@ function CreateVideo({ hasKey, onDone }: { hasKey: boolean; onDone: () => void }
     setBusy(true); setErr(null);
     try {
       const castSpec = cast.map((id, i) => `${id}:${i === 0 ? 'lead' : 'supporting'}`).join(',');
-      const { projectId } = await vb.createProject({ audio, name: name || 'Untitled', style, cast: castSpec, quality: 'fast', mode });
+      const { projectId } = await vb.createProject({ audio, name: name || 'Untitled', style, cast: castSpec, quality: 'fast', mode, format });
       startRender(projectId, scope === 'preview');
       onDone();
     } catch (e) { setErr(String((e as Error).message || e)); }
     finally { setBusy(false); }
   };
 
+  const pickFormat = (f: 'music-video' | 'ad') => {
+    setFormat(f);
+    setStyle(f === 'ad'
+      ? 'modern product commercial, clean studio + lifestyle, vibrant, premium brand look, crisp lighting'
+      : 'cinematic photorealistic music video, dramatic lighting, film grade, shallow depth of field');
+  };
+
   return (
     <div className="grid lg:grid-cols-[1.3fr_1fr] gap-5 animate-fade-up">
       <Card className="p-5 space-y-5">
+        <Field label="Format">
+          <div className="grid grid-cols-2 gap-2">
+            {([['music-video', 'Music video', 'A story cut to the lyrics'], ['ad', 'Ad / Spot', 'A product commercial']] as const).map(([f, t, sub]) => (
+              <button key={f} onClick={() => pickFormat(f)}
+                className={cx('rounded-xl border px-4 py-3 text-left transition-colors',
+                  format === f ? 'border-violet-400/60 bg-violet-500/10 text-slate-100' : 'border-white/10 hover:bg-white/[0.03] text-slate-300')}>
+                <div className="font-medium">{t}</div><div className="text-xs text-slate-500 mt-0.5">{sub}</div>
+              </button>
+            ))}
+          </div>
+        </Field>
         <Field label="Song">
           <button onClick={pick}
             className={cx('w-full rounded-2xl border-2 border-dashed p-5 text-left transition-colors flex items-center gap-3',

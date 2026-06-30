@@ -51,6 +51,7 @@ async function dispatch(command: string, f: Record<string, string | boolean>, em
         cast: str(f.cast),
         quality: str(f.quality, 'fast'),
         mode: str(f.mode, 'realistic'),
+        format: str(f.format, 'music-video'),
         videoModel: str(f['video-model']),
         id: str(f.id),
       });

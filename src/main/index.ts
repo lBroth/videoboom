@@ -172,10 +172,11 @@ function registerIpc() {
   });
 
   // ── one-shot sidecar ops (no streaming needed) ──
-  ipcMain.handle('project:create', (_e, o: { audio: string; name: string; style: string; cast: string; quality: string; mode: string }) =>
+  ipcMain.handle('project:create', (_e, o: { audio: string; name: string; style: string; cast: string; quality: string; mode: string; format?: string }) =>
     streamOp('create', 'create-project', [
       '--audio', o.audio, '--name', o.name || '', '--style', o.style || '',
       '--cast', o.cast || '', '--quality', o.quality || 'fast', '--mode', o.mode || 'realistic',
+      '--format', o.format || 'music-video',
     ]));
   ipcMain.handle('character:create', (_e, o: { name: string; style?: string }) =>
     streamOp('charcreate', 'character-create', ['--name', o.name || '', '--style', o.style || '']));

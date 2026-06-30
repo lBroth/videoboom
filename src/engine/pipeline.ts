@@ -91,6 +91,31 @@ function refsForScene(p: any, scene: any): [string, string][] {
 
 // ── prompts ──────────────────────────────────────────────────────────────────--
 const SYS = 'You are an award-winning music-video director. Output ONLY one valid JSON object.';
+const SYS_AD = 'You are an award-winning commercial/ad director. Output ONLY one valid JSON object.';
+
+/** Shot-list rules for an ad/spot: the product is the hero, benefit-driven, punchy, ends on a CTA. */
+function adShotListPrompt(style: string, bibleBlock: string, momentsBlock: string, n: number, castBlock = ''): string {
+  return `BRAND / STYLE: ${style}${bibleBlock}${castBlock}
+
+You are turning the SPOT BIBLE above into the actual shot list — a punchy commercial cut to the music.
+For EACH timed moment below, write ONE vivid, on-brand shot that sells.
+RULES:
+- THE PRODUCT IS THE HERO. If a SUBJECT/PRODUCT reference is given (cast index 0), it appears in most shots
+  — hero framing, clean product close-ups, the product in use, the result it delivers. Refer to it ONLY by
+  its name/role; its reference photo defines its EXACT look — never invent, alter, or restyle it.
+- ARC (follow the music's energy): open with a HOOK (an attention-grabbing image), reveal the PRODUCT
+  clearly, show its BENEFIT and an aspirational LIFESTYLE/feeling, and BUILD to a final CALL-TO-ACTION shot
+  (product + brand moment, confident and clean). The LAST shot is the CTA / hero product beat.
+- Ads CAN be punchy and energetic — quick, bold, beat-synced framings, dynamic camera, striking light.
+- People (if any) are aspirational lifestyle talent using/enjoying the product, looking natural and desirable.
+- VARY framing each shot (hero close-up, product-in-context, lifestyle wide, detail macro, dramatic angle).
+- Do NOT render readable words/logos/captions as garbled text (the model can't spell). Imply the brand via
+  product + mood, not fake on-screen text. NEVER Asian/foreign signage.
+MOMENTS:
+${momentsBlock}
+
+Output EXACTLY ${n} scenes in the same order, indices 0..${n - 1}, each with its "characters" list.`;
+}
 
 function shotListPrompt(style: string, _look: string, bibleBlock: string, momentsBlock: string, n: number, castBlock = ''): string {
   return `STYLE: ${style}${bibleBlock}${castBlock}
@@ -155,7 +180,8 @@ function previewTarget(n: number, preview: boolean): number {
 // ── storyboard ──────────────────────────────────────────────────────────────--
 async function storyboard(pid: string, emit: Emit, preview: boolean): Promise<void> {
   const p = S.getProject(pid) || {};
-  const style = (p.style || 'cinematic music video').trim();
+  const format = p.format === 'ad' ? 'ad' : 'music-video';
+  const style = (p.style || (format === 'ad' ? 'modern product commercial' : 'cinematic music video')).trim();
   const look = env('VB_LOOK', 'attractive, stylish, fashionable, glamorous Western/European adults, viral looks');
   const cast: any[] = [];
   (p.cast || []).forEach((c: any, i: number) => {
@@ -172,8 +198,9 @@ async function storyboard(pid: string, emit: Emit, preview: boolean): Promise<vo
         return `  ${i}: ${c.name} — role: ${c.role}` + (desc ? ` — who they are: ${desc.slice(0, 140)}` : '');
       })
       .join('\n');
-    castBlock =
-      `\n\nCAST (index 0 = lead). The 'who they are' note tells you each one's AGE / TYPE so you frame them correctly (a baby is a baby, a dog is a dog) — use it ONLY for framing. In the scene prompts refer to each ONLY by name + role (e.g. "Ian, the lead"); NEVER copy that note or invent/age/alter their face, hair, age, skin or clothing — their reference photo defines their exact look:\n${lines}`;
+    castBlock = format === 'ad'
+      ? `\n\nSUBJECT / PRODUCT (index 0 = the hero product/brand). Feature it; its reference photo defines its EXACT look — never invent, alter or restyle it. Refer to it ONLY by name/role in the prompts:\n${lines}`
+      : `\n\nCAST (index 0 = lead). The 'who they are' note tells you each one's AGE / TYPE so you frame them correctly (a baby is a baby, a dog is a dog) — use it ONLY for framing. In the scene prompts refer to each ONLY by name + role (e.g. "Ian, the lead"); NEVER copy that note or invent/age/alter their face, hair, age, skin or clothing — their reference photo defines their exact look:\n${lines}`;
   }
 
   S.updateProject(pid, { status: 'storyboarding', stage: 'storyboard', progress: 0.05, renderStartedAt: Date.now() / 1000 });
@@ -188,7 +215,9 @@ async function storyboard(pid: string, emit: Emit, preview: boolean): Promise<vo
     .map((w) => w.word || '')
     .join(' ')
     .trim();
-  if (whisperText.length < 40) {
+  // Music videos need lyrics to drive the story; ads can run on an instrumental track (the spot's beats
+  // come from the energy windows + the product brief), so don't require words there.
+  if (format !== 'ad' && whisperText.length < 40) {
     S.updateProject(pid, { status: 'failed', stage: 'failed', error: "Could not read the song's words (no audible vocals)." });
     throw new Error('no lyrics');
   }
@@ -212,7 +241,7 @@ async function storyboard(pid: string, emit: Emit, preview: boolean): Promise<vo
   const energies = await windowEnergy(song, wins);
 
   emit({ event: 'stage', stage: 'story' });
-  const bible = await P.storyBible(whisperText, style, dur, castBlock);
+  const bible = await P.storyBible(whisperText, style, dur, castBlock, format);
   if (!bible || !(bible.acts || []).length) {
     S.updateProject(pid, { status: 'failed', stage: 'failed', error: 'Story generation failed. Retry.' });
     throw new Error('no bible');
@@ -220,8 +249,9 @@ async function storyboard(pid: string, emit: Emit, preview: boolean): Promise<vo
   const acts = bible.acts
     .map((a: any) => `  - [${a.section || ''}] location="${a.location || ''}" beat="${a.beat || ''}" emotion="${a.emotion || ''}"`)
     .join('\n');
-  const bibleBlock =
-    `\n\nSTORY BIBLE (the video must TELL THIS STORY):\nLOGLINE: ${bible.logline || ''}\nPROTAGONIST: ${bible.protagonist || ''}\nWORLD: ${bible.world || ''}\nARC: ${bible.arc || ''}\nACTS:\n${acts}\n`;
+  const bibleBlock = format === 'ad'
+    ? `\n\nSPOT BIBLE (the commercial must deliver THIS):\nLOGLINE: ${bible.logline || ''}\nHERO PRODUCT/BRAND: ${bible.protagonist || ''}\nWORLD: ${bible.world || ''}\nARC: ${bible.arc || ''}\nACTS:\n${acts}\n`
+    : `\n\nSTORY BIBLE (the video must TELL THIS STORY):\nLOGLINE: ${bible.logline || ''}\nPROTAGONIST: ${bible.protagonist || ''}\nWORLD: ${bible.world || ''}\nARC: ${bible.arc || ''}\nACTS:\n${acts}\n`;
   S.updateProject(pid, { stage: 'scenes', progress: 0.2 });
 
   emit({ event: 'stage', stage: 'shotlist' });
@@ -236,10 +266,13 @@ async function storyboard(pid: string, emit: Emit, preview: boolean): Promise<vo
     return `${k}: t=${Math.round(wins[k][0] * 10) / 10}s dur=${Math.round((wins[k][1] - wins[k][0]) * 10) / 10}s energy=${energies[k]} ${tag}`;
   };
   const moments = Array.from({ length: n }, (_, k) => moment(k)).join('\n');
-  const user = shotListPrompt(style, look, bibleBlock, moments, n, castBlock);
+  const user = format === 'ad'
+    ? adShotListPrompt(style, bibleBlock, moments, n, castBlock)
+    : shotListPrompt(style, look, bibleBlock, moments, n, castBlock);
+  const sys = format === 'ad' ? SYS_AD : SYS;
   let scenes: any[] = [];
   for (let i = 0; i < 3; i++) {
-    const out = await P.llmJson(SYS, user, P.SCENES_SCHEMA, undefined, Math.min(60000, 1200 + n * 260), 0.4);
+    const out = await P.llmJson(sys, user, P.SCENES_SCHEMA, undefined, Math.min(60000, 1200 + n * 260), 0.4);
     scenes = out ? out.scenes || [] : [];
     if (scenes.length >= n) break;
   }
@@ -741,16 +774,18 @@ function parseCast(spec: string): { id: string; role: string | null }[] {
   return cast;
 }
 
-export function createProject(o: { audio: string; name?: string; style?: string; cast?: string; quality?: string; mode?: string; videoModel?: string; id?: string }): { projectId: string } {
+export function createProject(o: { audio: string; name?: string; style?: string; cast?: string; quality?: string; mode?: string; format?: string; videoModel?: string; id?: string }): { projectId: string } {
   const pid = o.id || newId();
   const ext = (o.audio.match(/\.[^.\/\\]+$/)?.[0] || '.mp3').toLowerCase();
   const audioKey = `${pid}/audio${ext}`;
   S.copyFileIn(o.audio, S.mediaPath(audioKey));
+  const format = o.format === 'ad' ? 'ad' : 'music-video';
   const item: any = {
     id: pid,
     name: o.name || 'Untitled',
     status: 'ready',
-    style: o.style || 'cinematic music video',
+    format,
+    style: o.style || (format === 'ad' ? 'modern product commercial' : 'cinematic music video'),
     cast: parseCast(o.cast || ''),
     quality: o.quality || 'fast',
     videoStyle: o.mode || 'realistic',
