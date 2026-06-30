@@ -2,9 +2,27 @@
 // clip renders via providers.genVideo (submit + poll) inside a bounded concurrency pool. Progress is
 // reported through an `emit(event)` callback the engine turns into IPC events. Segmentation / shot-list /
 // frame-grid logic is a verbatim port of the proven pipeline.
+import crypto from 'node:crypto';
+import fs from 'node:fs';
 import { env, envInt, envBool } from './config';
 import { costTotal } from './cost';
 import * as S from './storage';
+
+/** Read up to the first + last 256KB of a file into one buffer (cheap content fingerprint for large media). */
+function fsReadHeadTail(path: string, size: number): Buffer {
+  const cap = 256 * 1024;
+  if (size <= cap * 2) return fs.readFileSync(path);
+  const fd = fs.openSync(path, 'r');
+  try {
+    const head = Buffer.alloc(cap);
+    const tail = Buffer.alloc(cap);
+    fs.readSync(fd, head, 0, cap, 0);
+    fs.readSync(fd, tail, 0, cap, size - cap);
+    return Buffer.concat([head, tail]);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
 import { FPS, probeDuration, toPng, putThumb, fitToWindow, trimToWindow, stillClip, ffmpeg, toWav, lastFrame, concatClips } from './ffmpeg';
 import * as P from './providers';
 import { genVideoLocal } from './localVideo';
@@ -256,6 +274,8 @@ async function storyboard(pid: string, emit: Emit, preview: boolean): Promise<vo
     durationSec: Math.round(covered * 100) / 100,
     stage: 'rendering',
     progress: 0.3,
+    // Fingerprint the audio so a later re-render reuses this storyboard while the song is unchanged.
+    storyboardHash: audioFingerprint(p),
   });
 }
 
@@ -466,8 +486,42 @@ async function renderScenes(pid: string, emit: Emit, cancelled: Cancelled): Prom
   return assemble(pid, emit);
 }
 
-export async function render(pid: string, emit: Emit, preview: boolean, cancelled: Cancelled = never): Promise<{ projectId: string; videoKey: string }> {
-  await storyboard(pid, emit, preview);
+/** A cheap, stable fingerprint of the project's audio (size + a content hash of head+tail), so a cached
+ * storyboard is reused only while the audio is unchanged — re-uploading the song invalidates it. */
+function audioFingerprint(p: any): string {
+  try {
+    const path = S.mediaPath(p.audioKey);
+    const size = S.fileSize(path);
+    const fd = fsReadHeadTail(path, size);
+    return `${size}:${crypto.createHash('sha1').update(fd).digest('hex').slice(0, 16)}`;
+  } catch {
+    return '';
+  }
+}
+
+/** Has this project already got a valid storyboard for its CURRENT audio? (scenes with prompts + matching
+ * audio fingerprint). When true, a re-render can skip STT + the LLM story/shot-list passes entirely. */
+function hasValidStoryboard(pid: string): boolean {
+  const p = S.getProject(pid) || {};
+  const n = Number(p.sceneCount || 0);
+  if (n <= 0 || !p.storyboardHash) return false;
+  const s0 = S.getScene(pid, 0);
+  if (!s0 || !(s0.prompt || '').trim()) return false;
+  return p.storyboardHash === audioFingerprint(p);
+}
+
+export async function render(pid: string, emit: Emit, preview: boolean, cancelled: Cancelled = never, regenStory = false): Promise<{ projectId: string; videoKey: string }> {
+  // Reuse the cached storyboard (STT + LLM story/shot-list + keyframes are the slow pre-video steps) when the
+  // audio is unchanged and we're not explicitly regenerating — just re-point renderTarget for preview/full.
+  if (!regenStory && hasValidStoryboard(pid)) {
+    const p = S.getProject(pid) || {};
+    const n = Number(p.sceneCount || 0);
+    const target = previewTarget(n, preview);
+    emit({ event: 'stage', stage: 'story-cached' });
+    S.updateProject(pid, { renderTarget: target, status: 'rendering', stage: 'rendering', renderStartedAt: Date.now() / 1000 });
+  } else {
+    await storyboard(pid, emit, preview);
+  }
   return renderScenes(pid, emit, cancelled);
 }
 

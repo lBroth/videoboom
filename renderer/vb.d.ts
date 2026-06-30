@@ -52,7 +52,7 @@ export interface VBApi {
   createProject(o: { audio: string; name: string; style: string; cast: string; quality: string; mode: string }): Promise<{ projectId: string }>;
   createCharacter(o: { name: string; style?: string }): Promise<{ characterId: string }>;
   characterPortrait(o: { character: string; photo?: string; prompt?: string }): Promise<Record<string, unknown>>;
-  render(pid: string, preview: boolean): Promise<Record<string, unknown>>;
+  render(pid: string, preview: boolean, regenStory?: boolean): Promise<Record<string, unknown>>;
   resume(pid: string): Promise<Record<string, unknown>>;
   requality(pid: string): Promise<Record<string, unknown>>;
   regenerateScene(pid: string, index: number): Promise<Record<string, unknown>>;

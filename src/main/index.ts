@@ -202,8 +202,9 @@ function registerIpc() {
   });
 
   // ── streaming render ops (renderer subscribes to sidecar:<opId>) ──
-  ipcMain.handle('render:start', (_e, o: { pid: string; preview: boolean }) =>
-    guardRender(o.pid) ?? streamOp('render:' + o.pid, 'render', ['--project', o.pid, ...(o.preview ? ['--preview'] : [])]));
+  ipcMain.handle('render:start', (_e, o: { pid: string; preview: boolean; regenStory?: boolean }) =>
+    guardRender(o.pid) ?? streamOp('render:' + o.pid, 'render',
+      ['--project', o.pid, ...(o.preview ? ['--preview'] : []), ...(o.regenStory ? ['--regen-story'] : [])]));
   ipcMain.handle('render:resume', (_e, pid: string) => guardRender(pid) ?? streamOp('render:' + pid, 'resume', ['--project', pid]));
   // Re-render the existing clips at quality (20 steps), reusing storyboard + keyframes — only the video step.
   ipcMain.handle('render:requality', (_e, pid: string) =>

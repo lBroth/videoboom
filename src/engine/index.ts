@@ -62,7 +62,8 @@ async function dispatch(command: string, f: Record<string, string | boolean>, em
     }
     case 'render': {
       const pid = str(f.project);
-      await PL.render(pid, emit, Boolean(f.preview), cancelled);
+      // --regen-story forces a fresh STT + storyboard; otherwise a cached storyboard for the same audio is reused.
+      await PL.render(pid, emit, Boolean(f.preview), cancelled, Boolean(f['regen-story']));
       const p = getProject(pid) || {};
       return { projectId: pid, status: p.status, videoKey: p.videoKey, costCents: costTotal() };
     }

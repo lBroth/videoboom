@@ -25,7 +25,7 @@ export interface VBApi {
   createProject(o: { audio: string; name: string; style: string; cast: string; quality: string; mode: string }): Promise<any>;
   createCharacter(o: { name: string; style?: string }): Promise<any>;
   characterPortrait(o: { character: string; photo?: string; prompt?: string }): Promise<any>;
-  render(pid: string, preview: boolean): Promise<any>;
+  render(pid: string, preview: boolean, regenStory?: boolean): Promise<any>;
   resume(pid: string): Promise<any>;
   requality(pid: string): Promise<any>;
   regenerateScene(pid: string, index: number): Promise<any>;
@@ -62,7 +62,7 @@ const api: VBApi = {
   createProject: (o) => ipcRenderer.invoke('project:create', o),
   createCharacter: (o) => ipcRenderer.invoke('character:create', o),
   characterPortrait: (o) => ipcRenderer.invoke('character:portrait', o),
-  render: (pid, preview) => ipcRenderer.invoke('render:start', { pid, preview }),
+  render: (pid, preview, regenStory) => ipcRenderer.invoke('render:start', { pid, preview, regenStory }),
   resume: (pid) => ipcRenderer.invoke('render:resume', pid),
   requality: (pid) => ipcRenderer.invoke('render:requality', pid),
   regenerateScene: (pid, index) => ipcRenderer.invoke('scene:regenerate', { pid, index }),
