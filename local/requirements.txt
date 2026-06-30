@@ -8,3 +8,6 @@ torch
 # local stages: STT (whisper), keyframes (mflux FLUX). mlx-lm (LLM) + mlx-vlm (VLM) ship with mlx-video.
 mlx-whisper
 mflux
+# frame interpolation (RIFE, ncnn->Vulkan->MoltenVK->Metal = Apple GPU). MIT. Generate fewer frames + 2x up.
+# Needs the rife-v4.6 model files (flownet.param/.bin) downloaded into the package's models/ dir (setup.sh).
+rife-ncnn-vulkan-python-tntwise
