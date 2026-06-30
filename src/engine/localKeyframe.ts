@@ -30,14 +30,16 @@ export async function keyframeLocal(prompt: string, outPath: string, refs: [stri
   const payload: Record<string, unknown> = {
     out: outPath,
     prompt: text,
-    width: envInt('VB_LOCAL_KEYFRAME_W', 1024),
-    height: envInt('VB_LOCAL_KEYFRAME_H', 576),
+    // Match the video model's input size so the keyframe isn't up/downscaled (saves Kontext time + avoids a
+    // resize). settingsEnv sets these per model (LTX 896x512, Wan 832x480); default to LTX.
+    width: envInt('VB_LOCAL_KEYFRAME_W', 896),
+    height: envInt('VB_LOCAL_KEYFRAME_H', 512),
     seed: seedFor(outPath),
     model: env('VB_LOCAL_KEYFRAME_MODEL', 'dhairyashil/FLUX.1-schnell-mflux-4bit'), // ungated mirror; BFL schnell is HF-gated
   };
   if (ref) {
     payload.ref = ref;
-    payload.kontext_steps = envInt('VB_LOCAL_KONTEXT_STEPS', 12); // FLUX Kontext: 12 ≈ identity at ~40% less time than 20
+    payload.kontext_steps = envInt('VB_LOCAL_KONTEXT_STEPS', 8); // FLUX Kontext holds identity at 8 steps (anchored to the ref photo); ~33% faster than 12
   }
   try {
     const r = await sidecarPost('/keyframe', payload, envInt('VB_LOCAL_KEYFRAME_DEADLINE_SEC', 1200) * 1000);

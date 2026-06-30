@@ -83,11 +83,16 @@ export function settingsEnv(): Record<string, string> {
     env.VB_WORKERS = '1'; // serialise — one video model run already saturates unified memory
     env.VB_LOCAL_VIDEO_MODEL = s.localVideoModel || 'ltx';
     if (s.localVideoModel === 'ltx') {
-      // LTX renders 896x512; match VB_W/VB_H so a failed-scene fill is the same size as the clips (concat).
+      // LTX renders 896x512; match VB_W/VB_H so a failed-scene fill is the same size as the clips (concat),
+      // and the keyframe (Kontext) so it isn't resized into the video.
       env.VB_W = '896';
       env.VB_H = '512';
+      env.VB_LOCAL_KEYFRAME_W = '896';
+      env.VB_LOCAL_KEYFRAME_H = '512';
       return env;
     }
+    env.VB_LOCAL_KEYFRAME_W = '832'; // Wan paths render 480p — keyframe matches
+    env.VB_LOCAL_KEYFRAME_H = '480';
     // ── Wan 5B / 14B ──
     const hd = s.localQuality === 'hd';
     env.VB_LOCAL_QUALITY = hd ? 'hd' : 'fast';
