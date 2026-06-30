@@ -7,17 +7,21 @@ import { env, envInt } from './config';
 import { vW, vH } from './ffmpeg';
 import { ensureSidecar, sidecarPost, readMarker } from './sidecar';
 
-/** Which local i2v model: '5b' = Wan2.2-TI2V-5B (default — ~2.6x faster than the 14B at 480p, single-DiT,
- * x64 VAE, native ~10 steps, no Lightning LoRA), '14b' = Wan2.2-I2V-A14B + Lightning 4-step. */
-function videoModel(): '5b' | '14b' {
-  return env('VB_LOCAL_VIDEO_MODEL', '5b') === '14b' ? '14b' : '5b';
+/** Which local i2v model:
+ * 'ltx'  = LTX-2.3 distilled (default — first+last-frame morph for smooth scene-to-scene flow, 896x512, fast),
+ * '5b'   = Wan2.2-TI2V-5B (single start frame, x64 VAE softer/deforms),
+ * '14b'  = Wan2.2-I2V-A14B + Lightning 4-step (sharp x16 VAE, slow). */
+function videoModel(): 'ltx' | '5b' | '14b' {
+  const m = env('VB_LOCAL_VIDEO_MODEL', 'ltx');
+  return m === '5b' || m === '14b' ? m : 'ltx';
 }
 
 /** Converted MLX model dir for the selected model (explicit override, else the setup.sh marker). */
 function modelDir(): string {
-  return videoModel() === '5b'
-    ? env('VB_LOCAL_WAN_5B_DIR') || readMarker('.model-path-5b')
-    : env('VB_LOCAL_WAN_DIR') || readMarker('.model-path');
+  const m = videoModel();
+  if (m === 'ltx') return env('VB_LOCAL_LTX_DIR') || readMarker('.model-path-ltx');
+  if (m === '5b') return env('VB_LOCAL_WAN_5B_DIR') || readMarker('.model-path-5b');
+  return env('VB_LOCAL_WAN_DIR') || readMarker('.model-path');
 }
 
 /** Wan2.2-Lightning 4-step LoRA dir (high/low noise safetensors): explicit override, else .lightning-dir.
@@ -30,19 +34,50 @@ function lightningLoras(): { high: string; low: string } | null {
   return fs.existsSync(high) && fs.existsSync(low) ? { high, low } : null;
 }
 
-/** Generate one clip locally. Mirrors providers.genVideo's [ok, err] contract. Wan i2v is conditioned on a
- * single start frame, so the cloud path's last-frame morph is not used here. */
-export async function genVideoLocal(img: string, prompt: string, outMp4: string, seconds: number, seed = 42): Promise<[boolean, string]> {
-  const is5b = videoModel() === '5b';
+/** Generate one clip locally. Mirrors providers.genVideo's [ok, err] contract. `endImg` (the next scene's
+ * keyframe) is used by the LTX backend as a last-frame morph target for smooth scene-to-scene flow; the Wan
+ * backends are single-start-frame and ignore it. */
+export async function genVideoLocal(img: string, prompt: string, outMp4: string, seconds: number, seed = 42, endImg: string | null = null): Promise<[boolean, string]> {
+  const model = videoModel();
   const md = modelDir();
   if (!md || !fs.existsSync(md)) {
-    return [false, 'Local video model not found. Run `bash local/setup.sh` (or set VB_LOCAL_WAN_5B_DIR / VB_LOCAL_WAN_DIR).'];
+    return [false, 'Local video model not found. Run `bash local/setup.sh` (or set the model dir env).'];
   }
   try {
     await ensureSidecar();
   } catch (e: any) {
     return [false, e?.message || String(e)];
   }
+
+  // ── LTX-2.3: first+last frame morph, 896x512, two-stage distilled ──────────────────────────────
+  if (model === 'ltx') {
+    const payload: Record<string, unknown> = {
+      engine: 'ltx',
+      model_dir: md,
+      image: img,
+      prompt,
+      out: outMp4,
+      seconds,
+      fps: envInt('VB_LOCAL_LTX_FPS', 24),
+      width: envInt('VB_LOCAL_LTX_W', 896),   // /64
+      height: envInt('VB_LOCAL_LTX_H', 512),  // /64
+      seed: Math.trunc(seed),
+      max_frames: envInt('VB_LOCAL_LTX_MAX_FRAMES', 97),
+      min_frames: envInt('VB_LOCAL_LTX_MIN_FRAMES', 25),
+    };
+    if (endImg && fs.existsSync(endImg)) payload.end_image = endImg;
+    const dl = envInt('VB_LOCAL_DEADLINE_SEC', 1800) * 1000;
+    try {
+      const r = await sidecarPost('/i2v', payload, dl);
+      if (r.ok && fs.existsSync(outMp4) && fs.statSync(outMp4).size > 0) return [true, ''];
+      return [false, r.error || 'local LTX i2v produced no output'];
+    } catch (e: any) {
+      return [false, `local LTX i2v error: ${e?.message || e}`];
+    }
+  }
+
+  // ── Wan 2.2 (5B / 14B) ─────────────────────────────────────────────────────────────────────────
+  const is5b = model === '5b';
   const payload: Record<string, unknown> = {
     model_dir: md,
     image: img,

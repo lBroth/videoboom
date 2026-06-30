@@ -20,6 +20,7 @@ local/.venv/
 local/models/
 local/.model-path
 local/.model-path-5b
+local/.model-path-ltx
 local/.lightning-dir
 
 # bundled sidecar (built per-OS by scripts/build-sidecar.sh)

@@ -23,12 +23,15 @@ GPU_LOCK = threading.Lock()  # one model job at a time (shared unified memory)
 
 
 def _handle_i2v(req: dict) -> dict:
-    # Wan's generate_video self-loads/frees its weights outside the ModelManager, so first evict any
-    # resident keyframe/LLM/VLM model — otherwise that (~10GB FLUX, ~19GB LLM) plus Wan's ~24GB peak
-    # OOMs unified memory after a couple of clips (Metal "Insufficient Memory").
+    # The video model self-loads/frees its weights outside the ModelManager, so first evict any resident
+    # keyframe/LLM/VLM model — otherwise that (~10GB FLUX, ~19GB LLM) plus the ~19-24GB video model OOMs
+    # unified memory (Metal "Insufficient Memory").
     from manager import unload_all
     unload_all()
-    from wan_i2v import run_i2v
+    if req.get("engine") == "ltx":
+        from ltx_i2v import run_ltx_i2v  # LTX-2.3, first+last frame morph
+        return run_ltx_i2v(req)
+    from wan_i2v import run_i2v          # Wan 2.2 (5B / 14B)
     return run_i2v(req)
 
 

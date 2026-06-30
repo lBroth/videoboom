@@ -14,7 +14,8 @@ export interface Settings {
   moderationModel: string;  // VB_MODERATION_MODEL — upload safety
   sttLang: string;          // VB_STT_LANG — '' = auto-detect
   workers: number;          // VB_WORKERS — parallel scene render concurrency
-  videoBackend: 'cloud' | 'local'; // VB_VIDEO_BACKEND — cloud i2v vs on-device Wan 2.2 MLX
+  videoBackend: 'cloud' | 'local'; // VB_VIDEO_BACKEND — cloud i2v vs on-device MLX video
+  localVideoModel: 'ltx' | '5b' | '14b'; // VB_LOCAL_VIDEO_MODEL — LTX-2.3 (first+last morph) / Wan 5B / Wan 14B
   localQuality: 'fast' | 'hd'; // local Wan: fast = 480p Lightning 4-step, hd = 720p 40-step
   localWanDir: string;      // VB_LOCAL_WAN_DIR — '' = read local/.model-path
   sttBackend: 'cloud' | 'local'; // VB_STT_BACKEND — cloud WhisperX (Replicate) vs on-device mlx-whisper
@@ -33,6 +34,7 @@ export const DEFAULTS: Settings = {
   sttLang: '',
   workers: 4,
   videoBackend: 'cloud',
+  localVideoModel: 'ltx',
   localQuality: 'fast',
   localWanDir: '',
   sttBackend: 'cloud',
@@ -77,11 +79,17 @@ export function settingsEnv(): Record<string, string> {
   if (s.vlmBackend === 'local') env.VB_VLM_BACKEND = 'local';
   if (s.keyframeBackend === 'local') env.VB_KEYFRAME_BACKEND = 'local';
   if (s.videoBackend === 'local') {
-    // On-device Wan 2.2 MLX. Serialise scenes (one 14B run already saturates unified memory). Resolution
-    // is the #1 speed lever: 'fast' = 480p (Lightning 4-step, ~3min/clip) for tests; 'hd' = 720p, 40-step.
-    // Both set VB_W/VB_H so every clip + failed-scene fill share one size (concat needs uniform frames).
-    const hd = s.localQuality === 'hd';
     env.VB_VIDEO_BACKEND = 'local';
+    env.VB_WORKERS = '1'; // serialise — one video model run already saturates unified memory
+    env.VB_LOCAL_VIDEO_MODEL = s.localVideoModel || 'ltx';
+    if (s.localVideoModel === 'ltx') {
+      // LTX renders 896x512; match VB_W/VB_H so a failed-scene fill is the same size as the clips (concat).
+      env.VB_W = '896';
+      env.VB_H = '512';
+      return env;
+    }
+    // ── Wan 5B / 14B ──
+    const hd = s.localQuality === 'hd';
     env.VB_LOCAL_QUALITY = hd ? 'hd' : 'fast';
     // 480p (832×480). The default local i2v model is Wan2.2-TI2V-5B (~2.6x faster than the 14B, native
     // ~10 steps); per-model frame caps live in localVideo (5B=57 @24fps ≈ 2.4s, 14B=37 @16fps). Keep 480p

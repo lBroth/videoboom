@@ -179,8 +179,11 @@ async function storyboard(pid: string, emit: Emit, preview: boolean): Promise<vo
   // and the video has fewer cuts. VB_LOCAL_SCENE_SEC can tune the local target.
   let segOpts = undefined;
   if (env('VB_VIDEO_BACKEND', 'cloud') === 'local') {
-    const t = parseFloat(env('VB_LOCAL_SCENE_SEC', '6')) || 6;
-    segOpts = { target: t, maxSec: t * 2, minSec: Math.max(2, t * 0.5) };
+    // LTX makes one full clip per scene (max ~4s native), morphing first→last keyframe — keep scenes under
+    // that so trimToWindow fits. Wan chains sub-clips, so it can take longer scenes (default 6s).
+    const isLtx = env('VB_LOCAL_VIDEO_MODEL', 'ltx') === 'ltx';
+    const t = parseFloat(env('VB_LOCAL_SCENE_SEC', isLtx ? '3.5' : '6')) || (isLtx ? 3.5 : 6);
+    segOpts = isLtx ? { target: t, maxSec: 3.9, minSec: 2 } : { target: t, maxSec: t * 2, minSec: Math.max(2, t * 0.5) };
   }
   const segs = segmentSong(words, dur, segOpts).slice(0, MAX_SCENES);
   const n = segs.length;
@@ -321,11 +324,13 @@ async function renderClip(pid: string, k: number, p: any, kfFirst: string, kfLas
   const vmodel = p.videoModel || null;
   const raw = S.tmp(`raw_${pid}_${k}.mp4`);
   const clipPrompt = `${sc.prompt || ''}, ${motion}, cinematic`;
-  // Local Wan 2.2 MLX (on-device) vs cloud i2v (OpenRouter). Local is single-frame conditioned, so the
-  // cloud path's last-frame morph (kfLast) is unused; instead, for a scene longer than one native clip,
-  // local chains sub-clips (each i2v from the previous one's last frame) into one continuous shot.
-  const [ok, err] =
-    env('VB_VIDEO_BACKEND', 'cloud') === 'local'
+  // Three i2v paths: LTX local (first+last-frame morph → smooth flow toward the next keyframe, no sub-clip
+  // chaining needed); Wan local (single start frame → chain sub-clips for a long continuous shot); cloud.
+  const local = env('VB_VIDEO_BACKEND', 'cloud') === 'local';
+  const isLtx = local && env('VB_LOCAL_VIDEO_MODEL', 'ltx') === 'ltx';
+  const [ok, err] = isLtx
+    ? await genVideoLocal(kfFirst, clipPrompt, raw, wdur, seed, kfLast)
+    : local
       ? await renderLocalScene(pid, k, kfFirst, clipPrompt, wdur, raw, seed, emit)
       : await P.genVideo(kfFirst, clipPrompt, raw, wdur, kfLast, vmodel, seed);
   if (!ok) {
@@ -414,10 +419,12 @@ async function renderScenes(pid: string, emit: Emit, cancelled: Cancelled): Prom
   if (!toRender.length) return assemble(pid, emit);
   S.updateProject(pid, { status: 'rendering', stage: 'rendering', previewScenes: done.size + toRender.length, renderStartedAt: Date.now() / 1000 });
 
-  // Local backend: render as a (mostly) continuous chain — the LLM marks each scene cut/continue, a 'continue'
-  // scene starts from the previous scene's last frame (no keyframe), and an anti-drift cap forces a fresh
-  // keyframe after N continuous scenes. Far fewer keyframes (the Kontext bottleneck) + seamless motion.
-  if (env('VB_VIDEO_BACKEND', 'cloud') === 'local' && envBool('VB_LOCAL_CHAIN', true)) {
+  // Local Wan backends render as a (mostly) continuous chain — the LLM marks each scene cut/continue, a
+  // 'continue' scene starts from the previous scene's last frame, an anti-drift cap forces a fresh keyframe.
+  // LTX is NOT chained that way: it morphs first→last keyframe per scene, so it uses the standard path below
+  // (a keyframe per scene + renderClip gets the next scene's keyframe as the end-image).
+  const isLtxLocal = env('VB_VIDEO_BACKEND', 'cloud') === 'local' && env('VB_LOCAL_VIDEO_MODEL', 'ltx') === 'ltx';
+  if (env('VB_VIDEO_BACKEND', 'cloud') === 'local' && !isLtxLocal && envBool('VB_LOCAL_CHAIN', true)) {
     return renderScenesLocalChained(pid, p, toRender, target, toon, emit, cancelled);
   }
 

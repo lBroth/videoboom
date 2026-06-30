@@ -570,22 +570,33 @@ function SettingsScreen() {
 
           {caps.data.supported && settings.data.videoBackend === 'local' && (
             <div className="space-y-3 border-t border-white/5 pt-3">
-              <p className="text-xs text-slate-400">Local video model: <b className="text-slate-300">Wan 2.2 TI2V-5B</b> (MLX), 480p. Quality = diffusion steps. (720p needs more than 48GB — keep 480p on this Mac.)</p>
-              <Field label="Speed / quality">
-                <div className="grid grid-cols-2 gap-2">
-                  {([['fast', 'Fast · 10 steps', '~2 min/clip · 480p'], ['hd', 'Quality · 20 steps', '~4 min/clip · 480p, sharper']] as const).map(([q, t, sub]) => (
-                    <button key={q} onClick={() => vb.setSettings({ localQuality: q }).then(() => qc.invalidateQueries({ queryKey: ['settings'] }))}
+              <Field label="Local video model">
+                <div className="grid grid-cols-3 gap-2">
+                  {([['ltx', 'LTX-2.3', '896×512 · smooth flow · fast'], ['5b', 'Wan 5B', '480p · fast · softer'], ['14b', 'Wan 14B', '480p · sharp · slow']] as const).map(([m, t, sub]) => (
+                    <button key={m} onClick={() => vb.setSettings({ localVideoModel: m }).then(() => qc.invalidateQueries({ queryKey: ['settings'] }))}
                       className={cx('rounded-lg border px-3 py-2 text-left transition-colors',
-                        settings.data!.localQuality === q ? 'border-violet-400/60 bg-violet-500/10 text-slate-100' : 'border-white/10 hover:bg-white/[0.03] text-slate-300')}>
+                        (settings.data!.localVideoModel || 'ltx') === m ? 'border-violet-400/60 bg-violet-500/10 text-slate-100' : 'border-white/10 hover:bg-white/[0.03] text-slate-300')}>
                       <div className="text-sm font-medium">{t}</div><div className="text-xs text-slate-500">{sub}</div>
                     </button>
                   ))}
                 </div>
               </Field>
-              <Field label="Model dir override" hint="blank = local/.model-path-5b">
-                <input className={inputCls} defaultValue={settings.data.localWanDir} placeholder="/Volumes/SSD/…/Wan2.2-TI2V-5B-MLX"
-                  onBlur={(e) => vb.setSettings({ localWanDir: e.target.value.trim() }).then(() => qc.invalidateQueries({ queryKey: ['settings'] }))} />
-              </Field>
+              {(settings.data.localVideoModel || 'ltx') !== 'ltx' && (
+                <Field label="Speed / quality">
+                  <div className="grid grid-cols-2 gap-2">
+                    {([['fast', 'Fast · 10 steps', '~2 min/clip'], ['hd', 'Quality · 20 steps', '~4 min/clip, sharper']] as const).map(([q, t, sub]) => (
+                      <button key={q} onClick={() => vb.setSettings({ localQuality: q }).then(() => qc.invalidateQueries({ queryKey: ['settings'] }))}
+                        className={cx('rounded-lg border px-3 py-2 text-left transition-colors',
+                          settings.data!.localQuality === q ? 'border-violet-400/60 bg-violet-500/10 text-slate-100' : 'border-white/10 hover:bg-white/[0.03] text-slate-300')}>
+                        <div className="text-sm font-medium">{t}</div><div className="text-xs text-slate-500">{sub}</div>
+                      </button>
+                    ))}
+                  </div>
+                </Field>
+              )}
+              <p className="text-xs text-slate-400">{(settings.data.localVideoModel || 'ltx') === 'ltx'
+                ? 'LTX-2.3 morphs each scene between its start & end keyframe → smooth, identity-anchored flow. Run bash local/setup.sh to fetch it.'
+                : 'Wan keeps 480p (720p needs more than 48GB on this Mac).'}</p>
             </div>
           )}
         </Card>
