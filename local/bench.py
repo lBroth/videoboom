@@ -2,10 +2,22 @@
 (clean peak-memory), prints BENCH_RESULT json + lets generate_video's own Denoising/VAE/Total timers through.
 """
 import json
+import os
 import sys
 import time
 
 import mlx.core as mx
+
+# Optional MLX memory cap. OFF by default — a cap set BELOW what the 14B needs strangles it into swap
+# (image-encode went 4.4s -> 49s under a 46GB cap), which earlier led to a false "14B unusable" read. The
+# real crash that rebooted the Mac was two model processes running at once; the app already serialises to
+# one GPU job, so no cap is needed there. Set VB_BENCH_MEM_GB only as a deliberate ceiling for stress tests.
+_cap = os.environ.get("VB_BENCH_MEM_GB", "")
+if _cap:
+    try:
+        mx.set_memory_limit(int(float(_cap) * 1024 ** 3))
+    except Exception:
+        pass
 
 from mlx_video.models.wan_2.generate import generate_video
 
