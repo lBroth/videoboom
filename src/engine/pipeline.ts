@@ -2,7 +2,7 @@
 // clip renders via providers.genVideo (submit + poll) inside a bounded concurrency pool. Progress is
 // reported through an `emit(event)` callback the engine turns into IPC events. Segmentation / shot-list /
 // frame-grid logic is a verbatim port of the proven pipeline.
-import { env, envInt } from './config';
+import { env, envInt, envBool } from './config';
 import { costTotal } from './cost';
 import * as S from './storage';
 import { FPS, probeDuration, toPng, putThumb, fitToWindow, trimToWindow, stillClip, ffmpeg, toWav, lastFrame, concatClips } from './ffmpeg';
@@ -114,6 +114,14 @@ RULES:
 - FLOW: keep a consistent PALETTE / film-grade / tone across the video so shots morph smoothly — but the
   SETTING follows the words: change location whenever the lyric does (the lyric ALWAYS wins over location
   stability). Never hold a location past the line that justified it.
+- EDITING — set "transition" for each shot (you are the editor, cut to the music + story):
+  - "continue" = this shot FLOWS straight out of the previous one in the SAME place/moment — the camera
+    keeps moving, the action continues, NO cut. The previous shot's last frame becomes this shot's start, so
+    keep the same subject/location/lighting and just evolve the motion. Use it for smooth connected sequences.
+  - "cut" = a real cut to a NEW shot: the location changes, a new act/section/lyric begins, a big energy
+    jump, or you want a fresh framing/subject. The FIRST shot is ALWAYS "cut".
+  Prefer "continue" for consecutive shots in one setting (fewer, smoother cuts); "cut" whenever the words or
+  place change. Don't make every shot a cut — flow where the music/story flows.
 - Do NOT render readable words/logos/captions (garbage). NEVER Asian/foreign signage.
 MOMENTS:
 ${momentsBlock}
@@ -233,6 +241,7 @@ async function storyboard(pid: string, emit: Emit, preview: boolean): Promise<vo
       energy: energies[k],
       lyric: (snippets[k] || '').slice(0, 200),
       characters: ids,
+      transition: k === 0 ? 'cut' : s.transition === 'continue' ? 'continue' : 'cut',
       status: 'pending',
     });
   });
@@ -338,6 +347,59 @@ async function renderClip(pid: string, k: number, p: any, kfFirst: string, kfLas
   return [true, ''];
 }
 
+/** Local continuous-chain render: keyframes only for CUT scenes (the LLM decides cut/continue, an anti-drift
+ * cap forces a cut every VB_LOCAL_CHAIN_MAX scenes); clips render SEQUENTIALLY so a 'continue' scene starts
+ * from the previous scene's last frame. Fewer keyframes (faster) + seamless motion between scenes. */
+async function renderScenesLocalChained(pid: string, p: any, toRender: number[], target: number, toon: boolean, emit: Emit, cancelled: Cancelled): Promise<{ projectId: string; videoKey: string }> {
+  const MAX = Math.max(1, envInt('VB_LOCAL_CHAIN_MAX', 4));
+  // Decide cut vs continue in render order (first scene + LLM 'cut' + anti-drift cap force a fresh keyframe).
+  const cut: Record<number, boolean> = {};
+  let run = 0;
+  toRender.forEach((k, i) => {
+    const sc = S.getScene(pid, k) || {};
+    const isCut = i === 0 || sc.transition === 'cut' || run >= MAX;
+    cut[k] = isCut;
+    run = isCut ? 0 : run + 1;
+  });
+
+  // keyframe pass — CUT scenes only; group by ref variant so the heavy keyframe model swaps at most once.
+  const cutScenes = toRender.filter((k) => cut[k]);
+  const hasRef = (k: number) => refsForScene(p, S.getScene(pid, k) || {}).length > 0;
+  const ordered = [...cutScenes].sort((a, b) => (hasRef(a) ? 1 : 0) - (hasRef(b) ? 1 : 0) || a - b);
+  emit({ event: 'stage', stage: 'keyframes', total: ordered.length });
+  const kfPaths: Record<number, string | null> = {};
+  await mapPool(ordered, workers(), async (k) => {
+    checkCancel(cancelled);
+    kfPaths[k] = await buildKeyframe(pid, k, p, toon);
+    emit({ event: 'keyframe', index: k, ok: Boolean(kfPaths[k]) });
+  });
+
+  // clip pass — SEQUENTIAL: a continue scene starts from the previous scene's last frame.
+  emit({ event: 'stage', stage: 'clips', total: toRender.length });
+  let prevLast: string | null = null;
+  for (const k of toRender) {
+    checkCancel(cancelled);
+    let start = cut[k] ? kfPaths[k] : prevLast;
+    if (!start) start = await buildKeyframe(pid, k, p, toon); // chain broke (or keyframe failed) → fresh keyframe
+    const sc = S.getScene(pid, k) || {};
+    if (!start) {
+      putSceneMerged(pid, k, sc, { status: 'failed', error: 'Could not get a start frame for this scene.' });
+      emit({ event: 'scene', index: k, status: 'failed', error: 'no start frame' });
+      prevLast = null;
+      continue;
+    }
+    const [ok] = await renderClip(pid, k, p, start, null, emit);
+    prevLast = null;
+    if (ok) {
+      const clipKey = `${pid}/clips/scene_${k}.mp4`;
+      if (S.mediaExists(clipKey)) prevLast = await lastFrame(S.mediaPath(clipKey), S.tmp(`chain_last_${pid}_${k}.png`));
+    }
+    const d = S.listScenes(pid).filter((s) => s.status === 'done').length;
+    S.updateProject(pid, { scenesDone: d, progress: Math.round((0.3 + (0.6 * Math.min(d, target)) / Math.max(1, target)) * 1000) / 1000 });
+  }
+  return assemble(pid, emit);
+}
+
 async function renderScenes(pid: string, emit: Emit, cancelled: Cancelled): Promise<{ projectId: string; videoKey: string }> {
   const p = S.getProject(pid) || {};
   const n = Number(p.sceneCount || 0);
@@ -351,6 +413,13 @@ async function renderScenes(pid: string, emit: Emit, cancelled: Cancelled): Prom
     .sort((a, b) => a - b);
   if (!toRender.length) return assemble(pid, emit);
   S.updateProject(pid, { status: 'rendering', stage: 'rendering', previewScenes: done.size + toRender.length, renderStartedAt: Date.now() / 1000 });
+
+  // Local backend: render as a (mostly) continuous chain — the LLM marks each scene cut/continue, a 'continue'
+  // scene starts from the previous scene's last frame (no keyframe), and an anti-drift cap forces a fresh
+  // keyframe after N continuous scenes. Far fewer keyframes (the Kontext bottleneck) + seamless motion.
+  if (env('VB_VIDEO_BACKEND', 'cloud') === 'local' && envBool('VB_LOCAL_CHAIN', true)) {
+    return renderScenesLocalChained(pid, p, toRender, target, toon, emit, cancelled);
+  }
 
   // keyframe pass — each scene we render + its morph target (next scene's keyframe). Order so all no-ref
   // (FLUX txt2img) scenes run together and all ref (FLUX Kontext) scenes run together, so a cast-mixed
