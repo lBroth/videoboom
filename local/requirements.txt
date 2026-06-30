@@ -11,3 +11,5 @@ mflux
 # frame interpolation (RIFE, ncnn->Vulkan->MoltenVK->Metal = Apple GPU). MIT. Generate fewer frames + 2x up.
 # Needs the rife-v4.6 model files (flownet.param/.bin) downloaded into the package's models/ dir (setup.sh).
 rife-ncnn-vulkan-python-tntwise
+# upscale / detail recovery (Real-ESRGAN, ncnn->Metal Apple GPU). Bundles realesrgan-x4plus weights.
+realesrgan-ncnn-py
