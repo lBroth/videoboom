@@ -65,7 +65,10 @@ export async function genVideoLocal(img: string, prompt: string, outMp4: string,
       max_frames: envInt('VB_LOCAL_LTX_MAX_FRAMES', 97),
       min_frames: envInt('VB_LOCAL_LTX_MIN_FRAMES', 25),
     };
-    if (endImg && fs.existsSync(endImg)) payload.end_image = endImg;
+    // Single-image by default (freer, more natural motion). The first+last morph anchors identity at both
+    // ends but reads as slow-motion when the keyframes are close — opt in with VB_LOCAL_LTX_MORPH=1. Identity
+    // is still anchored per-scene by the Kontext keyframe either way.
+    if (env('VB_LOCAL_LTX_MORPH') && endImg && fs.existsSync(endImg)) payload.end_image = endImg;
     const dl = envInt('VB_LOCAL_DEADLINE_SEC', 1800) * 1000;
     try {
       const r = await sidecarPost('/i2v', payload, dl);
