@@ -72,6 +72,12 @@ async function dispatch(command: string, f: Record<string, string | boolean>, em
       const p = getProject(pid) || {};
       return { projectId: pid, status: p.status, videoKey: p.videoKey, costCents: costTotal() };
     }
+    case 'rerender-clips': {
+      const pid = str(f.project);
+      await PL.rerenderClips(pid, emit, cancelled);
+      const p = getProject(pid) || {};
+      return { projectId: pid, status: p.status, videoKey: p.videoKey, costCents: costTotal() };
+    }
     case 'regenerate-scene': {
       const pid = str(f.project);
       const index = parseInt(str(f.index, '0'), 10);

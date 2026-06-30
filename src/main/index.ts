@@ -70,8 +70,8 @@ function sidecarEnv(): Record<string, string> {
 
 // Run a streaming engine op: forward each event to the renderer on `sidecar:<opId>`, resolve on result.
 // (Channel name kept as `sidecar:` so the preload/renderer contract is unchanged.)
-function streamOp(opId: string, command: string, args: string[]) {
-  const run = runEngine(command, args, sidecarEnv(), (e: EngineEvent) => {
+function streamOp(opId: string, command: string, args: string[], extraEnv?: Record<string, string>) {
+  const run = runEngine(command, args, { ...sidecarEnv(), ...(extraEnv || {}) }, (e: EngineEvent) => {
     win?.webContents.send(`sidecar:${opId}`, e);
   });
   RUNS.set(opId, run);
@@ -205,6 +205,9 @@ function registerIpc() {
   ipcMain.handle('render:start', (_e, o: { pid: string; preview: boolean }) =>
     guardRender(o.pid) ?? streamOp('render:' + o.pid, 'render', ['--project', o.pid, ...(o.preview ? ['--preview'] : [])]));
   ipcMain.handle('render:resume', (_e, pid: string) => guardRender(pid) ?? streamOp('render:' + pid, 'resume', ['--project', pid]));
+  // Re-render the existing clips at quality (20 steps), reusing storyboard + keyframes — only the video step.
+  ipcMain.handle('render:requality', (_e, pid: string) =>
+    guardRender(pid) ?? streamOp('render:' + pid, 'rerender-clips', ['--project', pid], { VB_LOCAL_WAN_STEPS: '20' }));
   ipcMain.handle('scene:regenerate', (_e, o: { pid: string; index: number }) =>
     guardRender(o.pid) ?? streamOp('render:' + o.pid, 'regenerate-scene', ['--project', o.pid, '--index', String(o.index)]));
   ipcMain.handle('op:cancel', (_e, opId: string) => { RUNS.get(opId)?.cancel(); return true; });

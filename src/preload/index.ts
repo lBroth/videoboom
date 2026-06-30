@@ -27,6 +27,7 @@ export interface VBApi {
   characterPortrait(o: { character: string; photo?: string; prompt?: string }): Promise<any>;
   render(pid: string, preview: boolean): Promise<any>;
   resume(pid: string): Promise<any>;
+  requality(pid: string): Promise<any>;
   regenerateScene(pid: string, index: number): Promise<any>;
   cancel(opId: string): Promise<boolean>;
   // on-device models: capability gate + availability + download (with progress on `download:<STAGE>`)
@@ -63,6 +64,7 @@ const api: VBApi = {
   characterPortrait: (o) => ipcRenderer.invoke('character:portrait', o),
   render: (pid, preview) => ipcRenderer.invoke('render:start', { pid, preview }),
   resume: (pid) => ipcRenderer.invoke('render:resume', pid),
+  requality: (pid) => ipcRenderer.invoke('render:requality', pid),
   regenerateScene: (pid, index) => ipcRenderer.invoke('scene:regenerate', { pid, index }),
   cancel: (opId) => ipcRenderer.invoke('op:cancel', opId),
 

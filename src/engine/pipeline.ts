@@ -365,6 +365,25 @@ export async function resume(pid: string, emit: Emit, cancelled: Cancelled = nev
   return renderScenes(pid, emit, cancelled);
 }
 
+/** Re-render the already-rendered clips, reusing the storyboard + keyframes (no LLM, no keyframe regen) —
+ * e.g. to upgrade a fast 10-step preview to a 20-step quality pass. Resets the done scenes' clip status to
+ * pending (keeping their prompt/timing/keyframe), then re-runs the clip pass at the current step setting
+ * (the caller passes VB_LOCAL_WAN_STEPS, e.g. 20). buildKeyframe reuses the on-disk keyframes as-is. */
+export async function rerenderClips(pid: string, emit: Emit, cancelled: Cancelled = never): Promise<{ projectId: string; videoKey: string }> {
+  const scenes = S.listScenes(pid);
+  const doneIdx = scenes.filter((s) => s.status === 'done').map((s) => Number(s.index));
+  if (!doneIdx.length) throw new Error('No rendered scenes to re-render. Render a preview first.');
+  for (const s of scenes) {
+    if (s.status !== 'done') continue;
+    const keep: Record<string, unknown> = {};
+    for (const x of ['title', 'prompt', 'startSec', 'endSec', 'energy', 'lyric', 'characters']) if (x in s) keep[x] = s[x];
+    S.putScene(pid, Number(s.index), { status: 'pending', ...keep }); // keep keyframe + meta; clip will redo
+  }
+  const target = Math.max(...doneIdx) + 1;
+  S.updateProject(pid, { renderTarget: target, status: 'rendering', stage: 'rendering', renderStartedAt: Date.now() / 1000 });
+  return renderScenes(pid, emit, cancelled);
+}
+
 // ── single-scene refresh ────────────────────────────────────────────────────--
 const REFRESH_VARIATIONS = [
   'a different camera angle and framing',

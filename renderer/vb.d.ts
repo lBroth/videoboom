@@ -54,6 +54,7 @@ export interface VBApi {
   characterPortrait(o: { character: string; photo?: string; prompt?: string }): Promise<Record<string, unknown>>;
   render(pid: string, preview: boolean): Promise<Record<string, unknown>>;
   resume(pid: string): Promise<Record<string, unknown>>;
+  requality(pid: string): Promise<Record<string, unknown>>;
   regenerateScene(pid: string, index: number): Promise<Record<string, unknown>>;
   cancel(opId: string): Promise<boolean>;
   localCapabilities(): Promise<LocalCapabilities>;

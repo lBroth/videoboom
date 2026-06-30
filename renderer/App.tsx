@@ -33,8 +33,9 @@ const RenderCtx = createContext<{
   runs: Record<string, RunState>;
   startRender: (pid: string, preview: boolean) => void;
   startResume: (pid: string) => void;
+  startRequality: (pid: string) => void;
   startRegen: (pid: string, index: number) => void;
-}>({ runs: {}, startRender: () => {}, startResume: () => {}, startRegen: () => {} });
+}>({ runs: {}, startRender: () => {}, startResume: () => {}, startRequality: () => {}, startRegen: () => {} });
 const useRender = () => useContext(RenderCtx);
 
 function RenderProvider({ children }: { children: ReactNode }) {
@@ -69,6 +70,7 @@ function RenderProvider({ children }: { children: ReactNode }) {
     runs,
     startRender: (pid: string, preview: boolean) => launch(pid, preview ? 'Preview' : 'Full video', `render:${pid}`, () => vb.render(pid, preview)),
     startResume: (pid: string) => launch(pid, 'Full song', `render:${pid}`, () => vb.resume(pid)),
+    startRequality: (pid: string) => launch(pid, 'Re-render · Quality', `render:${pid}`, () => vb.requality(pid)),
     startRegen: (pid: string, index: number) => launch(pid, `Scene ${index + 1}`, `render:${pid}`, () => vb.regenerateScene(pid, index)),
   }), [runs, launch]);
 
@@ -265,7 +267,7 @@ function Videos() {
 }
 
 function VideoCard({ p }: { p: Project }) {
-  const { runs, startResume } = useRender();
+  const { runs, startResume, startRequality } = useRender();
   const qc = useQueryClient();
   const confirm = useConfirm();
   const [editing, setEditing] = useState(false);
@@ -301,6 +303,8 @@ function VideoCard({ p }: { p: Project }) {
         {!active && (
           <div className="flex flex-wrap gap-2">
             {canResume && <Button size="sm" variant="primary" icon={Plus} onClick={() => startResume(p.id)}>Finish full song</Button>}
+            {(p.status === 'preview' || p.status === 'done') && (p.scenesDone || 0) > 0 &&
+              <Button size="sm" variant="soft" icon={Sparkles} onClick={() => startRequality(p.id)} title="Re-render the video at 20 steps, reusing the scenes & keyframes">Re-render · Quality</Button>}
             {(p.status === 'preview' || p.status === 'done') && <Button size="sm" variant="soft" icon={Wand2} onClick={() => setEditing((v) => !v)}>Scenes</Button>}
             <Button size="sm" variant="ghost" icon={Trash2} onClick={del}>Delete</Button>
           </div>
