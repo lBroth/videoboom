@@ -5,7 +5,7 @@
 import { env, envInt } from './config';
 import { costTotal } from './cost';
 import * as S from './storage';
-import { FPS, probeDuration, toPng, putThumb, fitToWindow, stillClip, ffmpeg, toWav } from './ffmpeg';
+import { FPS, probeDuration, toPng, putThumb, fitToWindow, stillClip, ffmpeg, toWav, lastFrame, concatClips } from './ffmpeg';
 import * as P from './providers';
 import { genVideoLocal } from './localVideo';
 import { segmentSong, windowVocalCoverage, windowEnergy } from './segment';
@@ -166,13 +166,13 @@ async function storyboard(pid: string, emit: Emit, preview: boolean): Promise<vo
     S.updateProject(pid, { status: 'failed', stage: 'failed', error: "Could not read the song's words (no audible vocals)." });
     throw new Error('no lyrics');
   }
-  // Local Wan caps at ~37 frames (memory), so a clip's native length is maxFrames/fps (~2.3s). Cut scenes
-  // to roughly that so each renders at real speed — no time-stretch / slow-motion — and shots land at a
-  // proper music-video pace. Cloud keeps the original 6s phrasing.
+  // Scenes follow the vocal phrasing (~6s) for BOTH backends. The local model renders each scene as one
+  // continuous shot of chained native sub-clips (renderClip), so longer scenes no longer mean slow-motion —
+  // and the video has fewer cuts. VB_LOCAL_SCENE_SEC can tune the local target.
   let segOpts = undefined;
   if (env('VB_VIDEO_BACKEND', 'cloud') === 'local') {
-    const nativeSec = envInt('VB_LOCAL_MAX_FRAMES', 37) / Math.max(1, envInt('VB_LOCAL_WAN_FPS', 16));
-    segOpts = { target: nativeSec, maxSec: nativeSec * 1.15, minSec: nativeSec * 0.6 };
+    const t = parseFloat(env('VB_LOCAL_SCENE_SEC', '6')) || 6;
+    segOpts = { target: t, maxSec: t * 2, minSec: Math.max(2, t * 0.5) };
   }
   const segs = segmentSong(words, dur, segOpts).slice(0, MAX_SCENES);
   const n = segs.length;
@@ -275,6 +275,32 @@ async function buildKeyframe(pid: string, k: number, p: any, toon: boolean, refr
   return out;
 }
 
+/** Render a local scene as ONE continuous shot: chain native-length sub-clips — each i2v from the previous
+ * clip's last frame (the first from the keyframe) — to fill the scene, then concatenate. This fills a long
+ * scene with real motion instead of stretching one short clip (slow-motion), so we can use fewer/longer
+ * scenes (fewer cuts). A scene that already fits in one native clip just renders directly. */
+async function renderLocalScene(pid: string, k: number, kfFirst: string, clipPrompt: string, wdur: number, raw: string, seed: number, emit: Emit): Promise<[boolean, string]> {
+  const fps = Math.max(1, envInt('VB_LOCAL_WAN_FPS', 24));
+  const nativeSec = envInt('VB_LOCAL_MAX_FRAMES', 57) / fps; // ~2.4s — one native clip
+  const nSub = Math.max(1, Math.ceil((wdur - 0.25) / nativeSec)); // -0.25 so a ~native scene stays 1 clip
+  if (nSub <= 1) return genVideoLocal(kfFirst, clipPrompt, raw, wdur, seed);
+  const subs: string[] = [];
+  let startImg = kfFirst;
+  for (let i = 0; i < nSub; i++) {
+    const subSec = i < nSub - 1 ? nativeSec : Math.max(0.6, wdur - nativeSec * (nSub - 1));
+    const subOut = S.tmp(`sub_${pid}_${k}_${i}.mp4`);
+    const [sok, serr] = await genVideoLocal(startImg, clipPrompt, subOut, subSec, seed + i);
+    if (!sok) return [false, serr];
+    subs.push(subOut);
+    emit({ event: 'subclip', index: k, sub: i + 1, total: nSub });
+    if (i < nSub - 1) {
+      const lf = await lastFrame(subOut, S.tmp(`lf_${pid}_${k}_${i}.png`));
+      if (lf) startImg = lf; // continue the motion from the last frame
+    }
+  }
+  return (await concatClips(subs, raw)) ? [true, ''] : [false, 'failed to assemble chained sub-clips'];
+}
+
 async function renderClip(pid: string, k: number, p: any, kfFirst: string, kfLast: string | null, emit: Emit, seed = 42): Promise<[boolean, string]> {
   const sc = S.getScene(pid, k) || {};
   const wdur = Math.max(0.4, Number(sc.endSec || 0) - Number(sc.startSec || 0) || 4);
@@ -283,10 +309,11 @@ async function renderClip(pid: string, k: number, p: any, kfFirst: string, kfLas
   const raw = S.tmp(`raw_${pid}_${k}.mp4`);
   const clipPrompt = `${sc.prompt || ''}, ${motion}, cinematic`;
   // Local Wan 2.2 MLX (on-device) vs cloud i2v (OpenRouter). Local is single-frame conditioned, so the
-  // cloud path's last-frame morph (kfLast) is unused on the local backend.
+  // cloud path's last-frame morph (kfLast) is unused; instead, for a scene longer than one native clip,
+  // local chains sub-clips (each i2v from the previous one's last frame) into one continuous shot.
   const [ok, err] =
     env('VB_VIDEO_BACKEND', 'cloud') === 'local'
-      ? await genVideoLocal(kfFirst, clipPrompt, raw, wdur, seed)
+      ? await renderLocalScene(pid, k, kfFirst, clipPrompt, wdur, raw, seed, emit)
       : await P.genVideo(kfFirst, clipPrompt, raw, wdur, kfLast, vmodel, seed);
   if (!ok) {
     const reason = P.isContentBlock(err) ? "This scene was blocked by the model's safety filter." : `Scene render failed: ${(err || '').slice(0, 160)}`;

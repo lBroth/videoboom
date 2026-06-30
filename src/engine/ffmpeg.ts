@@ -87,6 +87,23 @@ export async function moderationUri(p: string): Promise<string> {
   return 'data:image/png;base64,' + fs.readFileSync(p).toString('base64');
 }
 
+/** Grab a clip's final frame as a PNG — used to chain a follow-on i2v clip that continues the motion (so a
+ * long scene is one continuous shot of native sub-clips, no slow-motion). */
+export async function lastFrame(video: string, out: string): Promise<string | null> {
+  // seek ~0.4s before the end, then take the first frame there (robust vs exact last-frame selection)
+  const ok = await ffmpeg(['-sseof', '-0.4', '-i', video, '-frames:v', '1', '-update', '1', out]);
+  return ok && fileExists(out) ? out : null;
+}
+
+/** Concatenate clips (re-encoded, so differing params don't break it) into one video. Audio stripped. */
+export async function concatClips(clips: string[], out: string): Promise<string | null> {
+  if (!clips.length) return null;
+  const list = tmp(`concat_${Math.abs(out.split('').reduce((a, c) => (a * 31 + c.charCodeAt(0)) | 0, 7))}.txt`);
+  fs.writeFileSync(list, clips.map((c) => `file '${c.replace(/\\/g, '/')}'`).join('\n') + '\n');
+  const ok = await ffmpeg(['-f', 'concat', '-safe', '0', '-i', list, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-an', out]);
+  return ok && fileExists(out) ? out : null;
+}
+
 /** Conform a generated clip to EXACTLY its scene's frame-grid slot so concatenated scenes stay locked to
  * the song with NO cumulative drift (boundaries snapped to round(t*fps); counts telescope across scenes).
  * Measures the raw clip and retimes (setpts) to the exact frame-count duration. Audio stripped. */
