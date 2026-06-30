@@ -5,7 +5,7 @@
 import { env, envInt } from './config';
 import { costTotal } from './cost';
 import * as S from './storage';
-import { FPS, probeDuration, toPng, putThumb, fitToWindow, stillClip, ffmpeg, toWav, lastFrame, concatClips } from './ffmpeg';
+import { FPS, probeDuration, toPng, putThumb, fitToWindow, trimToWindow, stillClip, ffmpeg, toWav, lastFrame, concatClips } from './ffmpeg';
 import * as P from './providers';
 import { genVideoLocal } from './localVideo';
 import { segmentSong, windowVocalCoverage, windowEnergy } from './segment';
@@ -282,14 +282,18 @@ async function buildKeyframe(pid: string, k: number, p: any, toon: boolean, refr
 async function renderLocalScene(pid: string, k: number, kfFirst: string, clipPrompt: string, wdur: number, raw: string, seed: number, emit: Emit): Promise<[boolean, string]> {
   const fps = Math.max(1, envInt('VB_LOCAL_WAN_FPS', 24));
   const nativeSec = envInt('VB_LOCAL_MAX_FRAMES', 57) / fps; // ~2.4s — one native clip
-  const nSub = Math.max(1, Math.ceil((wdur - 0.25) / nativeSec)); // -0.25 so a ~native scene stays 1 clip
-  if (nSub <= 1) return genVideoLocal(kfFirst, clipPrompt, raw, wdur, seed);
+  const nSub = Math.max(1, Math.ceil(wdur / nativeSec)); // 1 only when the scene fits one native clip
+  // Render full native clips (snapped to 4n+1 frames), so the total is always >= the window and renderClip
+  // can TRIM (never stretch). A single-clip scene also renders a full native clip, then gets trimmed down.
+  if (nSub <= 1) return genVideoLocal(kfFirst, clipPrompt, raw, nativeSec, seed);
+  // Every sub-clip is a FULL native clip, so the chained total (nSub × nativeSec) is always >= the scene
+  // window — renderClip then TRIMS the excess (no slow-motion). Each continues the motion from the prior
+  // clip's last frame.
   const subs: string[] = [];
   let startImg = kfFirst;
   for (let i = 0; i < nSub; i++) {
-    const subSec = i < nSub - 1 ? nativeSec : Math.max(0.6, wdur - nativeSec * (nSub - 1));
     const subOut = S.tmp(`sub_${pid}_${k}_${i}.mp4`);
-    const [sok, serr] = await genVideoLocal(startImg, clipPrompt, subOut, subSec, seed + i);
+    const [sok, serr] = await genVideoLocal(startImg, clipPrompt, subOut, nativeSec, seed + i);
     if (!sok) return [false, serr];
     subs.push(subOut);
     emit({ event: 'subclip', index: k, sub: i + 1, total: nSub });
@@ -321,7 +325,13 @@ async function renderClip(pid: string, k: number, p: any, kfFirst: string, kfLas
     emit({ event: 'scene', index: k, status: 'failed', error: reason });
     return [false, reason];
   }
-  const fit = await fitToWindow(raw, sc.startSec || 0, sc.endSec || 0, S.tmp(`scene_${pid}_${k}.mp4`));
+  // Local chained clips are already >= the window → TRIM to the exact slot (real speed, never slow-motion).
+  // Cloud clips can be shorter/longer than the window → fitToWindow retimes them to the frame grid.
+  const isLocal = env('VB_VIDEO_BACKEND', 'cloud') === 'local';
+  const sceneOut = S.tmp(`scene_${pid}_${k}.mp4`);
+  const fit = isLocal
+    ? await trimToWindow(raw, sc.startSec || 0, sc.endSec || 0, sceneOut)
+    : await fitToWindow(raw, sc.startSec || 0, sc.endSec || 0, sceneOut);
   S.copyIn(fit, `${pid}/clips/scene_${k}.mp4`);
   putSceneMerged(pid, k, sc, { status: 'done', error: '', clipKey: `${pid}/clips/scene_${k}.mp4` });
   emit({ event: 'scene', index: k, status: 'done' });

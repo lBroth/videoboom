@@ -104,6 +104,16 @@ export async function concatClips(clips: string[], out: string): Promise<string 
   return ok && fileExists(out) ? out : null;
 }
 
+/** TRIM a clip to its scene's exact frame-grid slot by cutting excess frames — NO setpts retime — so motion
+ * plays at real speed (never slow-motion or sped-up). Requires the raw to already be >= the window length
+ * (the local clip-chaining guarantees this). Used for the local backend; cloud uses fitToWindow. */
+export async function trimToWindow(raw: string, startSec: number, endSec: number, out: string, fps = FPS): Promise<string> {
+  fps = Math.trunc(fps || FPS);
+  const nFrames = Math.max(1, Math.round(Number(endSec) * fps) - Math.round(Number(startSec) * fps));
+  await ffmpeg(['-i', raw, '-vf', `fps=${fps}`, '-frames:v', String(nFrames), '-an', out]);
+  return out;
+}
+
 /** Conform a generated clip to EXACTLY its scene's frame-grid slot so concatenated scenes stay locked to
  * the song with NO cumulative drift (boundaries snapped to round(t*fps); counts telescope across scenes).
  * Measures the raw clip and retimes (setpts) to the exact frame-count duration. Audio stripped. */
