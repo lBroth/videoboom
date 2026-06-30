@@ -322,6 +322,8 @@ function VideoCard({ p }: { p: Project }) {
             {(p.status === 'preview' || p.status === 'done') && (p.scenesDone || 0) > 0 &&
               <Button size="sm" variant="soft" icon={Sparkles} onClick={() => startRequality(p.id)} title="Re-render the video at 20 steps, reusing the scenes & keyframes">Re-render · Quality</Button>}
             {(p.status === 'preview' || p.status === 'done') && <Button size="sm" variant="soft" icon={Wand2} onClick={() => setEditing((v) => !v)}>Scenes</Button>}
+            {(p.status === 'preview' || p.status === 'done') && video &&
+              <Button size="sm" variant="soft" icon={Download} onClick={() => vb.downloadVideo(p.id)}>Download</Button>}
             <Button size="sm" variant="ghost" icon={Trash2} onClick={del}>Delete</Button>
           </div>
         )}

@@ -11,6 +11,7 @@ export interface VBApi {
   mediaUrl(key?: string | null): Promise<string | null>;
   dataDir(): Promise<string>;
   deleteProject(pid: string): Promise<boolean>;
+  downloadVideo(pid: string): Promise<string | null>;
   deleteCharacter(cid: string): Promise<boolean>;
   openExternal(url: string): Promise<void>;
   // config
@@ -48,6 +49,7 @@ const api: VBApi = {
   mediaUrl: (key) => ipcRenderer.invoke('media:url', key),
   dataDir: () => ipcRenderer.invoke('app:dataDir'),
   deleteProject: (pid) => ipcRenderer.invoke('project:delete', pid),
+  downloadVideo: (pid) => ipcRenderer.invoke('video:download', pid),
   deleteCharacter: (cid) => ipcRenderer.invoke('character:delete', cid),
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
 

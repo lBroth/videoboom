@@ -149,6 +149,22 @@ function registerIpc() {
   ipcMain.handle('project:delete', (_e, pid: string) => rmUnder(pid));
   ipcMain.handle('character:delete', (_e, cid: string) => rmUnder(path.join('characters', cid)));
 
+  // Save the finished video to a user-chosen location (Save As). Returns the saved path or null if cancelled.
+  ipcMain.handle('video:download', async (_e, pid: string) => {
+    const p = getProject(pid) as any;
+    const key = (p?.videoKey as string) || `${pid}/output/music_video.mp4`;
+    const src = path.join(dataDir(), key);
+    if (!fs.existsSync(src)) throw new Error('No finished video to download yet.');
+    const safeName = String(p?.name || 'video').replace(/[^\w.-]+/g, '_').slice(0, 60) || 'video';
+    const r = await dialog.showSaveDialog(win!, {
+      defaultPath: path.join(app.getPath('downloads'), `${safeName}.mp4`),
+      filters: [{ name: 'Video', extensions: ['mp4'] }],
+    });
+    if (r.canceled || !r.filePath) return null;
+    fs.copyFileSync(src, r.filePath);
+    return r.filePath;
+  });
+
   // ── config ──
   ipcMain.handle('keys:status', () => keyStatus());
   ipcMain.handle('keys:set', (_e, name: string, value: string) => { setKey(name, value); return keyStatus(); });

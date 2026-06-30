@@ -41,6 +41,7 @@ export interface VBApi {
   mediaUrl(key?: string | null): Promise<string | null>;
   dataDir(): Promise<string>;
   deleteProject(pid: string): Promise<boolean>;
+  downloadVideo(pid: string): Promise<string | null>;
   deleteCharacter(cid: string): Promise<boolean>;
   openExternal(url: string): Promise<void>;
   keysStatus(): Promise<Record<string, boolean>>;
