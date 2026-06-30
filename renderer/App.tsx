@@ -215,10 +215,7 @@ function CreateVideo({ hasKey, onDone }: { hasKey: boolean; onDone: () => void }
             </div>
           </button>
         </Field>
-        <Field label="Title"><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="My music video" /></Field>
-        <Field label="Style" hint="the visual direction">
-          <textarea className={cx(inputCls, 'h-20 py-2.5 resize-none')} value={style} onChange={(e) => setStyle(e.target.value)} />
-        </Field>
+        <Field label="Title"><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder={format === 'ad' ? 'My spot' : 'My music video'} /></Field>
         <Segmented label="Look" value={mode} onChange={setMode} options={[
           { value: 'realistic', title: 'Realistic', desc: 'photoreal, cinematic' },
           { value: 'toon', title: 'Animated', desc: '3D cartoon style' },
