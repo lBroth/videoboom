@@ -96,18 +96,33 @@ function missingLocalModels(): string[] {
   return map.filter(([field, key]) => (s as any)[field] === 'local' && st[key] !== 'ready').map(([, , label]) => label);
 }
 
-// Refuse a render and surface the reason on the render's progress channel (the renderer is listening there).
-function refuseRender(pid: string, message: string): Promise<never> {
-  win?.webContents.send(`sidecar:render:${pid}`, { event: 'error', message });
+// Refuse an op and surface the reason on its own progress channel (the renderer is listening there).
+function refuse(opId: string, message: string): Promise<never> {
+  win?.webContents.send(`sidecar:${opId}`, { event: 'error', message });
   return Promise.reject(new Error(message));
 }
 
-/** Guard render starts: one render at a time, no render mid-download, and required local models present. */
+// One GPU generation at a time: a render OR a character portrait (both drive the model sidecar). They block
+// each other so a video render and an AI image gen can't run concurrently and fight for memory.
+function gpuBusy(): boolean {
+  return [...RUNS.keys()].some((k) => k.startsWith('render:') || k.startsWith('portrait:'));
+}
+
+/** Guard render starts: one generation at a time, no render mid-download, required local models present. */
 function guardRender(pid: string): Promise<never> | null {
-  if (DOWNLOADS.size) return refuseRender(pid, 'A model download is in progress — wait for it to finish, then render.');
+  const opId = `render:${pid}`;
+  if (DOWNLOADS.size) return refuse(opId, 'A model download is in progress — wait for it to finish, then render.');
   const miss = missingLocalModels();
-  if (miss.length) return refuseRender(pid, `Download the local model(s) first in Settings → On-device: ${miss.join(', ')}.`);
-  if ([...RUNS.keys()].some((k) => k.startsWith('render:'))) return refuseRender(pid, 'A render is already in progress — only one runs at a time.');
+  if (miss.length) return refuse(opId, `Download the local model(s) first in Settings → On-device: ${miss.join(', ')}.`);
+  if (gpuBusy()) return refuse(opId, 'A generation is already running — only one runs at a time.');
+  return null;
+}
+
+/** Guard an AI character-portrait gen: blocked while a render or another portrait runs, or mid-download. */
+function guardPortrait(cid: string): Promise<never> | null {
+  const opId = `portrait:${cid}`;
+  if (DOWNLOADS.size) return refuse(opId, 'A model download is in progress — wait for it to finish.');
+  if (gpuBusy()) return refuse(opId, 'A generation is already running — wait for it to finish, then try again.');
   return null;
 }
 
@@ -165,7 +180,7 @@ function registerIpc() {
   ipcMain.handle('character:create', (_e, o: { name: string; style?: string }) =>
     streamOp('charcreate', 'character-create', ['--name', o.name || '', '--style', o.style || '']));
   ipcMain.handle('character:portrait', (_e, o: { character: string; photo?: string; prompt?: string }) =>
-    streamOp('portrait:' + o.character, 'character-portrait',
+    guardPortrait(o.character) ?? streamOp('portrait:' + o.character, 'character-portrait',
       ['--character', o.character, ...(o.photo ? ['--photo', o.photo] : []), ...(o.prompt ? ['--prompt', o.prompt] : [])]));
 
   // ── on-device model availability + downloads (renderer subscribes to download:<STAGE>) ──
@@ -191,7 +206,7 @@ function registerIpc() {
     guardRender(o.pid) ?? streamOp('render:' + o.pid, 'render', ['--project', o.pid, ...(o.preview ? ['--preview'] : [])]));
   ipcMain.handle('render:resume', (_e, pid: string) => guardRender(pid) ?? streamOp('render:' + pid, 'resume', ['--project', pid]));
   ipcMain.handle('scene:regenerate', (_e, o: { pid: string; index: number }) =>
-    streamOp('render:' + o.pid, 'regenerate-scene', ['--project', o.pid, '--index', String(o.index)]));
+    guardRender(o.pid) ?? streamOp('render:' + o.pid, 'regenerate-scene', ['--project', o.pid, '--index', String(o.index)]));
   ipcMain.handle('op:cancel', (_e, opId: string) => { RUNS.get(opId)?.cancel(); return true; });
 }
 
