@@ -61,12 +61,33 @@ def _ensure_resident() -> None:
     from mlx_video.models.wan_2 import generate as gen
     for name in ("load_wan_model", "load_vae_decoder", "load_vae_encoder"):
         _memoize(gen, name)
+    _keep_compiled(gen)
     try:
         from manager import register_unload_hook
         register_unload_hook(_free_resident_wan)
     except Exception:  # noqa: BLE001
         pass
     _PATCHED = True
+
+
+def _keep_compiled(gen) -> None:
+    """generate_video re-wraps each transformer with `m._compiled = mx.compile(m)` on EVERY call, throwing
+    away the previous wrapper's traced graphs — so even with resident weights each clip re-traces the
+    forward (the main reason resident mode measured net-negative). Patch the module's mx.compile so an
+    object that already carries a `_compiled` wrapper keeps it; anything else compiles as usual."""
+    mx_mod = gen.mx
+    orig = mx_mod.compile
+    if getattr(orig, "_vb_keep_compiled", False):
+        return
+
+    def compile_keep(fn, *args, **kwargs):
+        existing = getattr(fn, "_compiled", None)
+        if existing is not None:
+            return existing
+        return orig(fn, *args, **kwargs)
+
+    compile_keep._vb_keep_compiled = True
+    mx_mod.compile = compile_keep
 
 
 def _set_wired_limit() -> None:
@@ -95,13 +116,20 @@ def run_i2v(req: dict) -> dict:
     # Imported lazily so the server can answer /health before mlx-video is ready.
     from mlx_video.models.wan_2.generate import generate_video
 
-    # Resident Wan weights across clips: OFF by default. Measured net-NEGATIVE on a 48GB Mac — keeping the
-    # ~16GB transformers resident saves the ~15s reload but starves the denoise (memory pressure + per-call
-    # re-compile), making each clip slower overall. Opt in (VB_LOCAL_WAN_RESIDENT=1) only on a higher-memory
-    # Mac (64/128GB) where the headroom exists. The real speed levers are TI2V-5B / fewer-frames+RIFE.
+    # Resident Wan weights across clips: OFF by default and UNUSABLE on 48GB — verified twice (2026-07-02,
+    # even with compile-keep + tiny-VAE): clip 1 completes, then clip 2's 11GB bf16 T5 load on top of the
+    # ~16GB resident transformers gets the process memory-killed by the kernel. Opt in
+    # (VB_LOCAL_WAN_RESIDENT=1) only on 64/128GB Macs. On 48GB the reload savings come from the SMALL
+    # components instead: tiny-VAE decode (done) + a resident int8 T5 (mlx-umt5, ~6.3GB — B3).
     if int(req.get("resident", os.environ.get("VB_LOCAL_WAN_RESIDENT", "0"))):
         _ensure_resident()
     _set_wired_limit()
+
+    # Tiny-VAE decode (TAEHV taew2_1 on torch-MPS): ~62s official decode -> seconds, near-official quality.
+    # Opt-in until the A/B verdict; only affects the 16ch (14B) VAE — see tiny_vae.py.
+    if int(req.get("tiny_vae", os.environ.get("VB_LOCAL_TINY_VAE", "0"))):
+        import tiny_vae
+        tiny_vae.patch()
 
     model_dir = req["model_dir"]
     image = req["image"]
@@ -128,9 +156,14 @@ def run_i2v(req: dict) -> dict:
 
     # Wan2.2-Lightning 4-step distilled LoRA (high/low noise). When present this is the "fast but keeps
     # quality" path: 4 steps + CFG off (guide=1) ≈ 20x fewer 14B transformer passes than 40-step CFG.
+    # Motion is decided by the HIGH-noise expert and full-strength Lightning flattens it (the known
+    # slow-motion complaint, HF lightx2v discussions #5/#20) — a reduced strength there restores motion
+    # amplitude while the low-noise expert keeps full distillation for detail.
     strength = float(req.get("lora_strength", 1.0))
-    loras_high = [(req["lora_high"], strength)] if req.get("lora_high") else None
-    loras_low = [(req["lora_low"], strength)] if req.get("lora_low") else None
+    s_high = float(req.get("lora_strength_high", strength))
+    s_low = float(req.get("lora_strength_low", strength))
+    loras_high = [(req["lora_high"], s_high)] if req.get("lora_high") else None
+    loras_low = [(req["lora_low"], s_low)] if req.get("lora_low") else None
     if loras_high or loras_low:
         if steps is None:
             steps = 4

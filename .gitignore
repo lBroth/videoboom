@@ -41,3 +41,5 @@ resources/sidecar
 
 # encrypted key store (lives in userData at runtime; never commit if it lands in-tree)
 keys.json
+# Draw Things headless spike: binaries + model zoo (30GB+), never in the repo
+local/dt/

@@ -55,12 +55,64 @@ def _handle_keyframe(req: dict) -> dict:
     return run_keyframe(req)
 
 
+def _run_isolated(script: str, req: dict) -> dict:
+    """Run an ncnn/Vulkan job (interp.py / upscale.py) in a FRESH python subprocess. The rife and
+    realesrgan wheels each statically bundle MoltenVK — importing both in one process duplicates objc
+    classes and SEGFAULTS (verified). Isolation also returns all Vulkan memory the moment the job ends.
+    Still under GPU_LOCK like every job. The child reads the request JSON on stdin and prints the result
+    JSON as its last stdout line (the ncnn wrappers spam progress lines first)."""
+    import os
+    import signal
+    import subprocess
+    import sys
+    here = os.path.dirname(os.path.abspath(__file__))
+    # start_new_session so a timeout can kill the WHOLE process group: the worker spawns ffmpeg children,
+    # and killing only the python pid would leave a re-parented ffmpeg running (CPU + half-written files).
+    p = subprocess.Popen(
+        [sys.executable, os.path.join(here, script)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        out, err = p.communicate(input=json.dumps(req).encode(), timeout=int(req.get("timeout_sec", 5400)))
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            p.kill()
+        p.communicate()
+        return {"ok": False, "error": f"{script} timed out"}
+    if p.returncode != 0:
+        tail = (err or b"")[-800:].decode(errors="replace")
+        return {"ok": False, "error": f"{script} exited {p.returncode}: {tail}"}
+    for line in reversed((out or b"").decode(errors="replace").splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                return json.loads(line)
+            except ValueError:
+                pass
+    return {"ok": False, "error": f"{script}: no JSON result in output"}
+
+
+def _handle_interp(req: dict) -> dict:
+    # RIFE frame interpolation — isolated subprocess (see _run_isolated), no MLX model, no unload_all().
+    return _run_isolated("interp.py", req)
+
+
+def _handle_upscale(req: dict) -> dict:
+    # Real-ESRGAN video upscale — isolated subprocess, same deal as /interp.
+    return _run_isolated("upscale.py", req)
+
+
 ROUTES = {
     "/i2v": _handle_i2v,
     "/stt": _handle_stt,
     "/llm": _handle_llm,
     "/vlm": _handle_vlm,
     "/keyframe": _handle_keyframe,
+    "/interp": _handle_interp,
+    "/upscale": _handle_upscale,
 }
 
 

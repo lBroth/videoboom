@@ -4,7 +4,7 @@
 // frame-grid logic is a verbatim port of the proven pipeline.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import { env, envInt, envBool } from './config';
+import { env, envInt, envBool, stageBackend } from './config';
 import { costTotal } from './cost';
 import * as S from './storage';
 
@@ -23,9 +23,10 @@ function fsReadHeadTail(path: string, size: number): Buffer {
     fs.closeSync(fd);
   }
 }
-import { FPS, probeDuration, toPng, putThumb, fitToWindow, trimToWindow, stillClip, ffmpeg, toWav, lastFrame, concatClips } from './ffmpeg';
+import { FPS, probeDuration, toPng, putThumb, fitToWindow, trimToWindow, stillClip, ffmpeg, toWav, lastFrame, concatClips, x264 } from './ffmpeg';
 import * as P from './providers';
-import { genVideoLocal } from './localVideo';
+import { genVideoLocal, videoModel, localNativeFps, localMaxFrames } from './localVideo';
+import { ensureSidecar, sidecarPost } from './sidecar';
 import { segmentSong, windowVocalCoverage, windowEnergy } from './segment';
 
 export type Emit = (e: any) => void;
@@ -36,6 +37,10 @@ const never: Cancelled = () => false;
 const MIN_SCENES = 4;
 const MAX_SCENES = 60;
 const workers = () => Math.max(1, envInt('VB_WORKERS', 4));
+// Keyframe pool width. VB_WORKERS=1 (the local-video GPU guard) must not serialize CLOUD keyframes —
+// they're network-bound HTTP calls (~50 of them at 5-15s each = minutes of pure serialization). Local
+// keyframes share the GPU, so they keep the GPU pool width.
+const kfWorkers = () => (stageBackend('KEYFRAME') === 'cloud' ? Math.max(workers(), envInt('VB_KF_WORKERS', 4)) : workers());
 
 class Cancel extends Error {}
 function checkCancel(cancelled: Cancelled): void {
@@ -100,17 +105,35 @@ function adShotListPrompt(style: string, bibleBlock: string, momentsBlock: strin
 You are turning the SPOT BIBLE above into the actual shot list — a punchy commercial cut to the music.
 For EACH timed moment below, write ONE vivid, on-brand shot that sells.
 RULES:
-- THE PRODUCT IS THE HERO. If a SUBJECT/PRODUCT reference is given (cast index 0), it appears in most shots
-  — hero framing, clean product close-ups, the product in use, the result it delivers. Refer to it ONLY by
-  its name/role; its reference photo defines its EXACT look — never invent, alter, or restyle it.
+- THE PRODUCT IS THE HERO. If a SUBJECT/PRODUCT reference is given (cast index 0), it appears in EVERY
+  SINGLE shot — include index 0 in every scene's "characters" list. Hero framing, the product/mascot in
+  action, the result it delivers. Refer to it ONLY by its name/role; its reference photo defines its EXACT
+  look — never invent, alter, or restyle it.
+- EVERY SHOT NEEDS BIG, READABLE MOTION (critical — static shots kill the spot): the mascot dashes, leaps,
+  spins, sweeps ACROSS the frame; objects visibly transform, fly, or cascade; the camera moves decisively
+  (fast dolly, whip pan, orbit, crane). This is an animated commercial — exaggerated cartoon motion is
+  GOOD. Never a posed character just standing; something must be traveling through the frame in every shot.
+- STAY IN THE PRODUCT'S REAL DOMAIN (critical): the bible says what the product IS — every shot lives in
+  THAT world. Lyric metaphors are visual ideas INSIDE that domain, never literal objects: a software tool
+  that "cleans up" code shows screens, dashboards, developers, terminals, transforming codebases — NEVER a
+  physical cleaning product, spray bottle or mop. If no reference image is given, do NOT invent physical
+  packaging (bottles, boxes, labels) — sell through the product's world, its users and its effect.
 - ARC (follow the music's energy): open with a HOOK (an attention-grabbing image), reveal the PRODUCT
   clearly, show its BENEFIT and an aspirational LIFESTYLE/feeling, and BUILD to a final CALL-TO-ACTION shot
   (product + brand moment, confident and clean). The LAST shot is the CTA / hero product beat.
 - Ads CAN be punchy and energetic — quick, bold, beat-synced framings, dynamic camera, striking light.
 - People (if any) are aspirational lifestyle talent using/enjoying the product, looking natural and desirable.
 - VARY framing each shot (hero close-up, product-in-context, lifestyle wide, detail macro, dramatic angle).
-- Do NOT render readable words/logos/captions as garbled text (the model can't spell). Imply the brand via
-  product + mood, not fake on-screen text. NEVER Asian/foreign signage.
+- For EVERY shot also write "motion": ONE sentence of pure MOTION direction for the video model — an
+  EXPLICIT camera move (dolly in/out, tracking, pan left/right, orbital arc, crane up/down, whip pan) with a
+  pace word (slow/steady/brisk/rapid), plus what physically CHANGES across the clip as 2-3 chained beats
+  (e.g. "steady dolly in on the bottle, condensation beads run down, light flares across the glass").
+  Concrete and physical. NEVER "slow motion", never "static shot", no appearance/branding description.
+- ABSOLUTELY NO WRITTEN TEXT IN ANY SHOT (the image model cannot spell — every rendered word comes out
+  garbled and ruins the spot): never describe labels, packaging text, signs with words, on-screen captions,
+  UI text, lettering or brand names as VISIBLE WRITING. The product's name must NEVER appear written
+  anywhere — the reference image is the ONLY carrier of branding. Describe every surface, screen, sign and
+  package as clean/blank/unbranded. NEVER Asian/foreign signage.
 MOMENTS:
 ${momentsBlock}
 
@@ -165,7 +188,15 @@ RULES:
     jump, or you want a fresh framing/subject. The FIRST shot is ALWAYS "cut".
   Prefer "continue" for consecutive shots in one setting (fewer, smoother cuts); "cut" whenever the words or
   place change. Don't make every shot a cut — flow where the music/story flows.
-- Do NOT render readable words/logos/captions (garbage). NEVER Asian/foreign signage.
+- For EVERY shot also write "motion": ONE sentence of pure MOTION direction for the video model — an
+  EXPLICIT camera move (dolly in/out, tracking, pan left/right, tilt, orbital arc, crane up/down, handheld
+  drift) with a pace word (slow/steady/brisk/rapid), plus what the subject DOES across the clip as 2-3
+  chained physical beats (e.g. "she walks toward camera, stops at the window, turns her head to the light").
+  Without an explicit camera instruction the video model defaults to a dead push-in. Concrete and physical.
+  NEVER "slow motion", never "static shot", no appearance/wardrobe description (the image fixes the look).
+- ABSOLUTELY NO WRITTEN TEXT IN ANY SHOT (the image model cannot spell — rendered words come out garbled):
+  never describe signs with words, labels, captions, lettering or names as visible writing; describe
+  surfaces/signs/screens as clean/blank. NEVER Asian/foreign signage.
 MOMENTS:
 ${momentsBlock}
 
@@ -226,9 +257,9 @@ async function storyboard(pid: string, emit: Emit, preview: boolean): Promise<vo
   // and the video has fewer cuts. VB_LOCAL_SCENE_SEC can tune the local target.
   let segOpts = undefined;
   if (env('VB_VIDEO_BACKEND', 'cloud') === 'local') {
-    // LTX makes one full clip per scene (max ~4s native), morphing first→last keyframe — keep scenes under
-    // that so trimToWindow fits. Wan chains sub-clips, so it can take longer scenes (default 6s).
-    const isLtx = env('VB_LOCAL_VIDEO_MODEL', 'ltx') === 'ltx';
+    // LTX makes one full clip per scene (max ~4s native) — keep scenes under that so trimToWindow fits.
+    // Wan chains sub-clips, so it can take longer scenes (default 6s).
+    const isLtx = videoModel() === 'ltx';
     const t = parseFloat(env('VB_LOCAL_SCENE_SEC', isLtx ? '3.5' : '6')) || (isLtx ? 3.5 : 6);
     segOpts = isLtx ? { target: t, maxSec: 3.9, minSec: 2 } : { target: t, maxSec: t * 2, minSec: Math.max(2, t * 0.5) };
   }
@@ -241,8 +272,14 @@ async function storyboard(pid: string, emit: Emit, preview: boolean): Promise<vo
   const energies = await windowEnergy(song, wins);
 
   emit({ event: 'stage', stage: 'story' });
-  const bible = await P.storyBible(whisperText, style, dur, castBlock, format);
-  if (!bible || !(bible.acts || []).length) {
+  // The local LLM is nondeterministic — a single malformed JSON reply must not kill the render (the shot
+  // list below already retries 3x for the same reason).
+  let bible: any = null;
+  for (let i = 0; i < 3 && !bible; i++) {
+    bible = await P.storyBible(whisperText, style, dur, castBlock, format);
+    if (bible && !(bible.acts || []).length) bible = null;
+  }
+  if (!bible) {
     S.updateProject(pid, { status: 'failed', stage: 'failed', error: 'Story generation failed. Retry.' });
     throw new Error('no bible');
   }
@@ -290,6 +327,7 @@ async function storyboard(pid: string, emit: Emit, preview: boolean): Promise<vo
     S.putScene(pid, k, {
       title: s.title || `Scene ${k + 1}`,
       prompt: s.prompt,
+      motion: String(s.motion || '').trim().slice(0, 300),
       startSec: st,
       endSec: en,
       energy: energies[k],
@@ -317,6 +355,20 @@ function keyframePath(pid: string, k: number): string {
   return S.mediaPath(`${pid}/keyframes/scene_${k}.png`);
 }
 
+/** The LLM still sneaks renderable text into shot descriptions as quoted literals (a green 'SHIP IT'
+ * button) despite the no-text rules — and the image model then draws it garbled. Deterministic last line
+ * of defense: strip quoted literals and "that says/labeled ..." phrasings before the prompt reaches any
+ * image/video model. The composition survives; the lettering never gets asked for. */
+function stripWrittenText(s: string): string {
+  return String(s || '')
+    .replace(/"[^"]{1,40}"/g, '')                     // double-quoted literals
+    .replace(/[“”‘’][^“”‘’]{1,40}[“”‘’]/g, '')        // curly-quoted literals
+    .replace(/'[A-Z0-9][A-Z0-9 !._-]{1,30}'/g, '')    // single-quoted ALL-CAPS labels ('SHIP IT') — not apostrophes
+    .replace(/\b(?:that (?:says|reads)|which (?:says|reads)|reading|labell?ed|with the words?|text saying|saying)\b[^,.;]*/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\s+([,.;])/g, '$1');
+}
+
 function putSceneMerged(pid: string, k: number, sc: any, updates: Record<string, unknown>): void {
   const cur = { ...sc, ...updates };
   delete cur.projectId;
@@ -332,7 +384,7 @@ async function buildKeyframe(pid: string, k: number, p: any, toon: boolean, refr
     await putThumb(out, `${pid}/keyframes/scene_${k}_thumb.jpg`);
     return out;
   }
-  let prompt = sc.prompt || '';
+  let prompt = stripWrittenText(sc.prompt || '');
   if (refresh) prompt = `${prompt}, ${refresh}, no extreme close-up`;
   S.mkdirp(S.mediaPath(`${pid}/keyframes`));
   if (!(await P.cloudKeyframe(prompt, out, refsForScene(p, sc), toon))) return null;
@@ -345,20 +397,25 @@ async function buildKeyframe(pid: string, k: number, p: any, toon: boolean, refr
  * scene with real motion instead of stretching one short clip (slow-motion), so we can use fewer/longer
  * scenes (fewer cuts). A scene that already fits in one native clip just renders directly. */
 async function renderLocalScene(pid: string, k: number, kfFirst: string, clipPrompt: string, wdur: number, raw: string, seed: number, emit: Emit): Promise<[boolean, string]> {
-  const fps = Math.max(1, envInt('VB_LOCAL_WAN_FPS', 24));
-  const nativeSec = envInt('VB_LOCAL_MAX_FRAMES', 57) / fps; // ~2.4s — one native clip
+  // Native clip budget from the SELECTED model (the 14B is 16fps — assuming 24 here used to overestimate
+  // nativeSec, so chained totals could come out SHORTER than the scene window).
+  const fps = Math.max(1, localNativeFps());
+  const nativeSec = localMaxFrames() / fps; // one native clip (~2.3s)
   const nSub = Math.max(1, Math.ceil(wdur / nativeSec)); // 1 only when the scene fits one native clip
-  // Render full native clips (snapped to 4n+1 frames), so the total is always >= the window and renderClip
+  // Render native clips (snapped to 4n+1 frames) so the total is always >= the window and renderClip
   // can TRIM (never stretch). A single-clip scene also renders a full native clip, then gets trimmed down.
   if (nSub <= 1) return genVideoLocal(kfFirst, clipPrompt, raw, nativeSec, seed);
-  // Every sub-clip is a FULL native clip, so the chained total (nSub × nativeSec) is always >= the scene
-  // window — renderClip then TRIMS the excess (no slow-motion). Each continues the motion from the prior
-  // clip's last frame.
+  // Sub-clips chain (each continues from the prior clip's last frame) so the total covers the scene
+  // window — renderClip then TRIMS the excess (no slow-motion). The LAST sub-clip only renders what's
+  // left of the window (+ margin for the 4n+1 down-snap): a full native clip there is denoise time the
+  // trim just throws away (up to ~1 clip of GPU per scene).
   const subs: string[] = [];
   let startImg = kfFirst;
   for (let i = 0; i < nSub; i++) {
+    const remaining = wdur - i * nativeSec;
+    const secs = i === nSub - 1 ? Math.max(1, Math.min(nativeSec, remaining + 0.35)) : nativeSec;
     const subOut = S.tmp(`sub_${pid}_${k}_${i}.mp4`);
-    const [sok, serr] = await genVideoLocal(startImg, clipPrompt, subOut, nativeSec, seed + i);
+    const [sok, serr] = await genVideoLocal(startImg, clipPrompt, subOut, secs, seed + i);
     if (!sok) return [false, serr];
     subs.push(subOut);
     emit({ event: 'subclip', index: k, sub: i + 1, total: nSub });
@@ -373,18 +430,21 @@ async function renderLocalScene(pid: string, k: number, kfFirst: string, clipPro
 async function renderClip(pid: string, k: number, p: any, kfFirst: string, kfLast: string | null, emit: Emit, seed = 42): Promise<[boolean, string]> {
   const sc = S.getScene(pid, k) || {};
   const wdur = Math.max(0.4, Number(sc.endSec || 0) - Number(sc.startSec || 0) || 4);
-  const motion = P.MOTION[sc.energy || 'medium'] || P.MOTION.medium;
+  // The storyboard's per-scene motion direction (explicit camera move + chained subject action) leads the
+  // prompt — i2v models default to a timid push-in without an explicit camera instruction, and appearance
+  // text is redundant (the start image already fixes the look). Fallback: the generic per-energy phrase.
+  const motion = String(sc.motion || '').trim() || P.MOTION[sc.energy || 'medium'] || P.MOTION.medium;
   const vmodel = p.videoModel || null;
   const raw = S.tmp(`raw_${pid}_${k}.mp4`);
   // Carry the look into the video prompt so the model keeps it (esp. toon — otherwise it can drift realistic).
   const vstyle = p.videoStyle === 'toon'
     ? '3D animated cartoon, Pixar/DreamWorks style, clearly animated, NOT photorealistic'
     : env('VB_VISUAL_STYLE', '');
-  const clipPrompt = `${sc.prompt || ''}, ${motion}, cinematic${vstyle ? ', ' + vstyle : ''}`;
+  const clipPrompt = stripWrittenText(`${motion}. ${sc.prompt || ''}, cinematic${vstyle ? ', ' + vstyle : ''}`);
   // Three i2v paths: LTX local (first+last-frame morph → smooth flow toward the next keyframe, no sub-clip
   // chaining needed); Wan local (single start frame → chain sub-clips for a long continuous shot); cloud.
   const local = env('VB_VIDEO_BACKEND', 'cloud') === 'local';
-  const isLtx = local && env('VB_LOCAL_VIDEO_MODEL', 'ltx') === 'ltx';
+  const isLtx = local && videoModel() === 'ltx';
   const [ok, err] = isLtx
     ? await genVideoLocal(kfFirst, clipPrompt, raw, wdur, seed, kfLast)
     : local
@@ -404,6 +464,13 @@ async function renderClip(pid: string, k: number, p: any, kfFirst: string, kfLas
     ? await trimToWindow(raw, sc.startSec || 0, sc.endSec || 0, sceneOut)
     : await fitToWindow(raw, sc.startSec || 0, sc.endSec || 0, sceneOut);
   S.copyIn(fit, `${pid}/clips/scene_${k}.mp4`);
+  // Chained 'continue' scenes have no keyframe file (they start from the previous clip's last frame) —
+  // give the UI a real thumbnail by grabbing the finished clip's first frame.
+  if (!S.mediaExists(`${pid}/keyframes/scene_${k}.png`)) {
+    S.mkdirp(S.mediaPath(`${pid}/keyframes`));
+    const kfOut = keyframePath(pid, k);
+    if (await ffmpeg(['-i', fit, '-frames:v', '1', kfOut])) await putThumb(kfOut, `${pid}/keyframes/scene_${k}_thumb.jpg`);
+  }
   putSceneMerged(pid, k, sc, { status: 'done', error: '', clipKey: `${pid}/clips/scene_${k}.mp4` });
   emit({ event: 'scene', index: k, status: 'done' });
   return [true, ''];
@@ -430,7 +497,7 @@ async function renderScenesLocalChained(pid: string, p: any, toRender: number[],
   const ordered = [...cutScenes].sort((a, b) => (hasRef(a) ? 1 : 0) - (hasRef(b) ? 1 : 0) || a - b);
   emit({ event: 'stage', stage: 'keyframes', total: ordered.length });
   const kfPaths: Record<number, string | null> = {};
-  await mapPool(ordered, workers(), async (k) => {
+  await mapPool(ordered, kfWorkers(), async (k) => {
     checkCancel(cancelled);
     kfPaths[k] = await buildKeyframe(pid, k, p, toon);
     emit({ event: 'keyframe', index: k, ok: Boolean(kfPaths[k]) });
@@ -462,8 +529,23 @@ async function renderScenesLocalChained(pid: string, p: any, toRender: number[],
   return assemble(pid, emit);
 }
 
+/** A cast id whose character was deleted must FAIL the render loudly — silently dropping the reference
+ * (the old behavior) produces confidently wrong videos: keyframes lose the identity/product anchor and
+ * the director invents its own subject. */
+function assertCastExists(pid: string, p: any): void {
+  const missing = (p.cast || [])
+    .map((c: any) => (typeof c === 'object' ? c.id : c))
+    .filter((cid: string) => cid && !S.mediaExists(`characters/${cid}/primary.png`));
+  if (missing.length) {
+    const msg = 'A cast member of this project no longer exists (deleted character). Re-select the cast in Studio, then render again.';
+    S.updateProject(pid, { status: 'failed', stage: 'failed', error: msg });
+    throw new Error('cast member missing');
+  }
+}
+
 async function renderScenes(pid: string, emit: Emit, cancelled: Cancelled): Promise<{ projectId: string; videoKey: string }> {
   const p = S.getProject(pid) || {};
+  assertCastExists(pid, p);
   const n = Number(p.sceneCount || 0);
   const target = Math.min(Number(p.renderTarget || n), n);
   const toon = p.videoStyle === 'toon';
@@ -477,12 +559,14 @@ async function renderScenes(pid: string, emit: Emit, cancelled: Cancelled): Prom
   // Reset progress to the keyframe-phase baseline so a resume/re-render doesn't show the previous run's 100%.
   S.updateProject(pid, { status: 'rendering', stage: 'rendering', progress: 0.3, previewScenes: done.size + toRender.length, renderStartedAt: Date.now() / 1000 });
 
-  // Local Wan backends render as a (mostly) continuous chain — the LLM marks each scene cut/continue, a
+  // Local backends render as a (mostly) continuous chain — the LLM marks each scene cut/continue, a
   // 'continue' scene starts from the previous scene's last frame, an anti-drift cap forces a fresh keyframe.
-  // LTX is NOT chained that way: it morphs first→last keyframe per scene, so it uses the standard path below
-  // (a keyframe per scene + renderClip gets the next scene's keyframe as the end-image).
-  const isLtxLocal = env('VB_VIDEO_BACKEND', 'cloud') === 'local' && env('VB_LOCAL_VIDEO_MODEL', 'ltx') === 'ltx';
-  if (env('VB_VIDEO_BACKEND', 'cloud') === 'local' && !isLtxLocal && envBool('VB_LOCAL_CHAIN', true)) {
+  // LTX joins the chain too now that its first→last morph is opt-in: with morph OFF (the default) the old
+  // exclusion meant 'continue' was silently ignored and every ~3.5s scene started from a fresh keyframe — a
+  // visible pop at each boundary. Only morph-ON LTX keeps the standard path (it needs the keyframe pairs).
+  const localBackend = env('VB_VIDEO_BACKEND', 'cloud') === 'local';
+  const ltxMorph = localBackend && videoModel() === 'ltx' && envBool('VB_LOCAL_LTX_MORPH');
+  if (localBackend && !ltxMorph && envBool('VB_LOCAL_CHAIN', true)) {
     return renderScenesLocalChained(pid, p, toRender, target, toon, emit, cancelled);
   }
 
@@ -497,7 +581,7 @@ async function renderScenes(pid: string, emit: Emit, cancelled: Cancelled): Prom
   emit({ event: 'stage', stage: 'keyframes', total: needed.length });
   const kfPaths: Record<number, string | null> = {};
   let kfDone = 0;
-  await mapPool(needed, workers(), async (k) => {
+  await mapPool(needed, kfWorkers(), async (k) => {
     checkCancel(cancelled);
     const path = await buildKeyframe(pid, k, p, toon);
     kfPaths[k] = path;
@@ -586,7 +670,7 @@ export async function rerenderClips(pid: string, emit: Emit, cancelled: Cancelle
   for (const s of scenes) {
     if (s.status !== 'done') continue;
     const keep: Record<string, unknown> = {};
-    for (const x of ['title', 'prompt', 'startSec', 'endSec', 'energy', 'lyric', 'characters']) if (x in s) keep[x] = s[x];
+    for (const x of ['title', 'prompt', 'motion', 'startSec', 'endSec', 'energy', 'lyric', 'characters', 'transition']) if (x in s) keep[x] = s[x];
     S.putScene(pid, Number(s.index), { status: 'pending', ...keep }); // keep keyframe + meta; clip will redo
   }
   const target = Math.max(...doneIdx) + 1;
@@ -611,7 +695,7 @@ export async function regenerateScene(pid: string, k: number, emit: Emit): Promi
   const toon = p.videoStyle === 'toon';
   S.updateProject(pid, { status: 'rendering', stage: 'refresh', progress: 0.3, renderStartedAt: Date.now() / 1000 });
   const keep: Record<string, unknown> = {};
-  for (const x of ['title', 'prompt', 'startSec', 'endSec', 'energy', 'lyric', 'characters']) if (x in sc) keep[x] = sc[x];
+  for (const x of ['title', 'prompt', 'motion', 'startSec', 'endSec', 'energy', 'lyric', 'characters', 'transition']) if (x in sc) keep[x] = sc[x];
   S.putScene(pid, k, { status: 'pending', ...keep });
 
   const vary = REFRESH_VARIATIONS[Math.trunc(Date.now() / 1000) % REFRESH_VARIATIONS.length];
@@ -715,8 +799,43 @@ async function assemble(pid: string, emit: Emit): Promise<{ projectId: string; v
   const concat = `${work}/concat.txt`;
   S.writeText(concat, clips.map((c) => `file '${c.replace(/\\/g, '/')}'`).join('\n') + '\n');
   const silent = `${work}/output/silent.mp4`;
-  await ffmpeg(['-f', 'concat', '-safe', '0', '-i', concat, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-r', String(FPS), silent]);
-  const vdur = await probeDuration(silent);
+  await ffmpeg(['-f', 'concat', '-safe', '0', '-i', concat, ...x264(), '-r', String(FPS), silent]);
+
+  // ── finish chain (both steps best-effort — on any failure the plain concat plays) ──────────────
+  let master = silent;
+  // 1) Upscale: local diffusion emits 832×480/896×512 — watched fullscreen that reads soft no matter how
+  //    good the denoise was. One Real-ESRGAN pass (sidecar /upscale, Apple GPU — idle by assemble time)
+  //    to 1080p. Runs once on the whole timeline: every clip + failed-scene fill shares one size here.
+  if (env('VB_VIDEO_BACKEND', 'cloud') === 'local' && envBool('VB_LOCAL_UPSCALE', true)) {
+    try {
+      await ensureSidecar();
+      const up = `${work}/output/upscaled.mp4`;
+      const upSec = envInt('VB_UPSCALE_DEADLINE_SEC', 5400);
+      const r = await sidecarPost('/upscale', { video: silent, out: up, target_h: envInt('VB_UPSCALE_H', 1080), timeout_sec: Math.max(60, upSec - 60) }, upSec * 1000);
+      if (r.ok && S.fileSize(up) > 0) master = up;
+    } catch {
+      /* upscale is polish, never fail the render for it */
+    }
+  }
+  // 2) Grade: light deband/denoise → filmic S-curve + gentle saturation → micro-contrast sharpen →
+  //    temporal luma grain LAST (grain perceptually masks upscaler shimmer + AI over-smoothness).
+  //    VB_FINISH: off | subtle (default) | filmic (adds vignette + heavier grain).
+  const finish = env('VB_FINISH', 'subtle');
+  if (finish !== 'off') {
+    const graded = `${work}/output/graded.mp4`;
+    const vf = [
+      'hqdn3d=1.5:1.5:3:3',
+      "curves=master='0/0 0.25/0.22 0.5/0.5 0.75/0.79 1/1'",
+      'eq=saturation=1.06',
+      'unsharp=5:5:0.35:5:5:0.0',
+      ...(finish === 'filmic' ? ['vignette=PI/5'] : []),
+      `noise=c0s=${finish === 'filmic' ? 7 : 4}:c0f=t+u`,
+    ].join(',');
+    const okG = await ffmpeg(['-i', master, '-vf', vf, ...x264(envInt('VB_CRF_FINAL', 16)), '-an', graded]);
+    if (okG && S.fileSize(graded) > 0) master = graded;
+  }
+
+  const vdur = await probeDuration(master);
   if (vdur && vdur > 0) {
     const trimmed = `${work}/output/song_trim.wav`;
     await ffmpeg(['-i', `${work}/output/song.wav`, '-t', String(vdur), trimmed]);
@@ -730,7 +849,7 @@ async function assemble(pid: string, emit: Emit): Promise<{ projectId: string; v
   }
   const final = `${work}/output/music_video.mp4`;
   await ffmpeg([
-    '-i', silent, '-i', `${work}/output/song.wav`,
+    '-i', master, '-i', `${work}/output/song.wav`,
     '-map', '0:v', '-map', '1:a', '-c:v', 'copy', '-c:a', 'aac', '-shortest',
     '-metadata', 'comment=AI-generated music video — made with Videoboom',
     '-metadata', 'generator=Videoboom (open-source, AI-generated)',
@@ -747,7 +866,8 @@ async function assemble(pid: string, emit: Emit): Promise<{ projectId: string; v
   const doneN = scenes.filter((s) => s.status === 'done').length;
   const pending = scenes.filter((s) => s.status === 'pending').length;
   const doneStatus = pending ? 'preview' : 'done';
-  const patch: Record<string, unknown> = { status: doneStatus, stage: doneStatus, progress: 1, videoKey: key, scenesFailed: failed, previewScenes: doneN };
+  // error: '' — a stale failure message from an earlier attempt must not survive a successful render.
+  const patch: Record<string, unknown> = { status: doneStatus, stage: doneStatus, progress: 1, videoKey: key, scenesFailed: failed, previewScenes: doneN, error: '' };
   if (vdur && vdur > 0) patch.durationSec = Math.round(vdur * 100) / 100;
   const started = Number(p.renderStartedAt || 0);
   if (started) patch.renderSeconds = Math.round(Math.max(0, Date.now() / 1000 - started) * 10) / 10;

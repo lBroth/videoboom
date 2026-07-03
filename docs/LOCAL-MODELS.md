@@ -1,8 +1,9 @@
 # Local models (on-device, Apple Silicon)
 
-Status: **Wan 2.2 I2V-A14B (image-to-video) is wired.** Other stages (storyboard
-LLM, keyframes, lyric timing) are still cloud. This is the first step of moving the
-whole pipeline on-device.
+Status: **Wan 2.2 I2V-A14B (image-to-video) is wired and the default local model**
+(best quality: sharp x16 VAE, no people-deform). LTX-2.3 and Wan 5B are the explicit
+fast choices. A finish chain (RIFE interpolation → Real-ESRGAN 1080p upscale → filmic
+grade) runs on every local render.
 
 User-facing setup + tunables live in [`local/README.md`](../local/README.md). This
 page is the architecture for contributors.
@@ -43,16 +44,28 @@ src/engine/localVideo.ts  ──HTTP /i2v──▶  local/server.py  ──▶  
 - `src/main/settings.ts` → `videoBackend` + `localWanDir`; `settingsEnv()` maps local
   to `VB_VIDEO_BACKEND=local`, 720p, single worker.
 
+## Finish chain (fluidity + resolution)
+
+- **RIFE 2x** (`/interp`, rife-v4.26 ncnn under `local/models/`): every sub-24fps clip
+  (the 14B is 16fps native) is interpolated to 2× right after i2v, so the 24fps conform
+  DECIMATES instead of duplicating frames (duplication = the old visible judder).
+  Per-clip ONLY — never interpolate an assembled timeline (it would morph across cuts).
+- **Real-ESRGAN upscale** (`/upscale`): assemble runs the concatenated timeline to 1080p
+  (`VB_UPSCALE_H`), then a **filmic grade** (`VB_FINISH` = off|subtle|filmic: deband →
+  S-curve → micro-sharpen → temporal grain). Both best-effort — failures leave the raw cut.
+- The rife/realesrgan ncnn wheels each bundle MoltenVK — importing both in one process
+  SEGFAULTS, so the sidecar runs each job in an isolated subprocess (`_run_isolated`).
+
 ## Known limits
 
-- **Weights reload per call.** Upstream `generate_video` loads + frees T5 + both
-  transformers + VAE each request. Warm process + OS page cache help; a true
-  weight-resident denoise loop is folded into the Model Manager (TODO below).
+- **Weights reload per call.** Upstream `generate_video` loads + frees the text encoder +
+  transformers + VAE each request (LTX reloads everything per scene too). Warm process +
+  OS page cache help; a true weight-resident denoise loop is the Model Manager TODO.
 - **48GB memory ceiling.** Attention is O(seq_len²), so frames×resolution is hard-capped.
   480p / 37 frames is the stable point; 49f or 720p hit Metal "Insufficient Memory".
 - **Slow & heavy.** ~5.5 min/clip at 480p/37f Lightning 4-step; a full song is long.
-- **Slow-mo fixed** by cutting local scenes to ~native clip length (`VB_LOCAL_MAX_FRAMES /
-  VB_LOCAL_WAN_FPS`, ~2.3s) so clips render at real speed instead of being time-stretched.
+- **Slow-mo fixed** by cutting local scenes to ~native clip length and rendering the last
+  chained sub-clip only as long as the remaining window needs.
 
 ---
 

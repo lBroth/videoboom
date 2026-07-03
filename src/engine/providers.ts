@@ -157,10 +157,11 @@ export const SCENES_SCHEMA = {
             index: { type: 'integer' },
             title: { type: 'string' },
             prompt: { type: 'string' },
+            motion: { type: 'string' },
             characters: { type: 'array', items: { type: 'integer' } },
             transition: { type: 'string', enum: ['cut', 'continue'] },
           },
-          required: ['index', 'title', 'prompt', 'characters', 'transition'],
+          required: ['index', 'title', 'prompt', 'motion', 'characters', 'transition'],
         },
       },
     },
@@ -174,7 +175,9 @@ export async function storyBible(lyrics: string, style: string, dur: number, cas
   let user: string;
   if (format === 'ad') {
     system =
-      'You are an award-winning creative director at a top ad agency. You design a short, punchy COMMERCIAL / SPOT built around a PRODUCT (or brand/service), set to this music track. The product is the HERO. Structure: a HOOK that grabs attention -> reveal the product -> show its key BENEFIT and an aspirational lifestyle/feeling -> a clear CALL TO ACTION (the product + brand moment). Modern, desirable, it SELLS.';
+      'You are an award-winning creative director at a top ad agency. You design a short, punchy COMMERCIAL / SPOT built around a PRODUCT (or brand/service), set to this music track. The product is the HERO. ' +
+      'FIRST, IDENTIFY WHAT THE PRODUCT ACTUALLY IS from the reference/brief and the LYRICS AS A WHOLE — never from one word taken literally. Marketing language is metaphorical: a dev-tool jingle may say "mop up / clean it up" about CODE (repos, PRs, Node versions, lint) — that is a SOFTWARE product, and the spot lives in ITS world (developers, screens, dashboards, terminals, CI pipelines, abstract data imagery), NEVER household objects like detergent bottles or mops. Same for any domain: finance, fitness, food — the imagery comes from the product\'s REAL domain, the metaphors become visual ideas INSIDE that domain. ' +
+      'Structure: a HOOK that grabs attention -> reveal the product -> show its key BENEFIT and an aspirational lifestyle/feeling -> a clear CALL TO ACTION (the product + brand moment). Modern, desirable, it SELLS.';
     user =
       `BRAND / STYLE: ${style}\nSPOT LENGTH: ~${Math.trunc(dur || 0)}s${castBlock}\n\nSOUNDTRACK (the music for the spot${lyrics.trim().length > 40 ? ', with these words' : ' — likely instrumental'}):\n${lyrics || '(instrumental)'}\n\n` +
       'Design the SPOT. If a SUBJECT/PRODUCT reference is given, IT is the hero — feature it. Break into ACTS that track the music\'s energy: ACT 1 = HOOK (attention-grabbing opening, mood/teaser), ACT 2 = PRODUCT reveal (show it clearly, hero framing), ACT 3 = BENEFIT / lifestyle (the product in use, the feeling/result it delivers, aspirational), ACT 4 = CALL TO ACTION (product + brand close, a confident final beat). Each act = one setting + one beat + one emotion. Keep it punchy and on-brand; this is advertising, not a narrative film.';
@@ -279,7 +282,7 @@ export async function cloudKeyframe(prompt: string, outPath: string, refs: [stri
   const model = env('VB_KEYFRAME_MODEL', 'google/gemini-3.1-flash-image');
   const vstyle = toon ? TOON_STYLE : env('VB_VISUAL_STYLE', '');
   const nosign =
-    '16:9 widescreen. No readable text, no letters, no words, no captions, no watermark, no logo. NO neon signs with writing, NO Asian/Chinese/Japanese/Korean signage anywhere.';
+    '16:9 widescreen. Every surface, screen, sign and package in the scene is blank and unbranded — zero readable text anywhere. No letters, no words, no captions, no watermark, no logo. NO neon signs with writing, NO Asian/Chinese/Japanese/Korean signage anywhere.';
   const imgs: [string, string][] = [];
   for (const [path, label] of refs || []) {
     if (path && fileExists(path)) {

@@ -22,6 +22,12 @@ export const vW = (): number => envInt('VB_W', 768);
 export const vH = (): number => envInt('VB_H', 432);
 export const FPS = 24;
 
+// x264 encode args for every re-encode hop. Bare `-c:v libx264` means CRF 23 / preset medium — at 480p
+// that visibly smears texture, and clips go through 2-3 encode generations (sub-clip concat → trim →
+// assemble), so the loss compounds. CRF 14 keeps the intermediates visually lossless for pennies of disk.
+export const x264 = (crf = envInt('VB_CRF_INTER', 14), preset = 'medium'): string[] =>
+  ['-c:v', 'libx264', '-crf', String(crf), '-preset', preset, '-pix_fmt', 'yuv420p'];
+
 interface RunOut {
   code: number;
   stdout: Buffer;
@@ -90,8 +96,10 @@ export async function moderationUri(p: string): Promise<string> {
 /** Grab a clip's final frame as a PNG — used to chain a follow-on i2v clip that continues the motion (so a
  * long scene is one continuous shot of native sub-clips, no slow-motion). */
 export async function lastFrame(video: string, out: string): Promise<string | null> {
-  // seek ~0.4s before the end, then take the first frame there (robust vs exact last-frame selection)
-  const ok = await ffmpeg(['-sseof', '-0.4', '-i', video, '-frames:v', '1', '-update', '1', out]);
+  // Seek ~0.4s before the end, then decode to EOF with -update 1 overwriting `out` each frame — the TRUE
+  // last frame wins. (With -frames:v 1 the FIRST frame at -0.4s wins, so every chained clip restarted
+  // ~0.4s early and motion visibly jumped backwards at each seam.)
+  const ok = await ffmpeg(['-sseof', '-0.4', '-i', video, '-update', '1', out]);
   return ok && fileExists(out) ? out : null;
 }
 
@@ -100,7 +108,7 @@ export async function concatClips(clips: string[], out: string): Promise<string 
   if (!clips.length) return null;
   const list = tmp(`concat_${Math.abs(out.split('').reduce((a, c) => (a * 31 + c.charCodeAt(0)) | 0, 7))}.txt`);
   fs.writeFileSync(list, clips.map((c) => `file '${c.replace(/\\/g, '/')}'`).join('\n') + '\n');
-  const ok = await ffmpeg(['-f', 'concat', '-safe', '0', '-i', list, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-an', out]);
+  const ok = await ffmpeg(['-f', 'concat', '-safe', '0', '-i', list, ...x264(), '-an', out]);
   return ok && fileExists(out) ? out : null;
 }
 
@@ -110,7 +118,7 @@ export async function concatClips(clips: string[], out: string): Promise<string 
 export async function trimToWindow(raw: string, startSec: number, endSec: number, out: string, fps = FPS): Promise<string> {
   fps = Math.trunc(fps || FPS);
   const nFrames = Math.max(1, Math.round(Number(endSec) * fps) - Math.round(Number(startSec) * fps));
-  await ffmpeg(['-i', raw, '-vf', `fps=${fps}`, '-frames:v', String(nFrames), '-an', out]);
+  await ffmpeg(['-i', raw, '-vf', `fps=${fps}`, '-frames:v', String(nFrames), ...x264(), '-an', out]);
   return out;
 }
 
@@ -126,7 +134,7 @@ export async function fitToWindow(raw: string, startSec: number, endSec: number,
   const rawDur = (await probeDuration(raw)) || target;
   let factor = rawDur && rawDur > 0 ? target / rawDur : 1.0;
   factor = Math.min(8.0, Math.max(0.05, factor));
-  await ffmpeg(['-i', raw, '-vf', `setpts=${factor.toFixed(6)}*PTS,fps=${fps}`, '-frames:v', String(nFrames), '-an', out]);
+  await ffmpeg(['-i', raw, '-vf', `setpts=${factor.toFixed(6)}*PTS,fps=${fps}`, '-frames:v', String(nFrames), ...x264(), '-an', out]);
   return out;
 }
 
@@ -157,11 +165,11 @@ export async function stillClip(image: string, startSec: number, endSec: number,
     image && fileExists(image)
       ? ['-loop', '1', '-t', target.toFixed(3), '-i', image]
       : ['-f', 'lavfi', '-i', `color=c=0x111418:s=${w}x${h}:r=${fps}`, '-t', target.toFixed(3)];
-  await ffmpeg([...src, '-vf', chain, '-frames:v', String(n), '-pix_fmt', 'yuv420p', '-an', out]);
+  await ffmpeg([...src, '-vf', chain, '-frames:v', String(n), ...x264(), '-an', out]);
   // The drawtext watermark needs a font + a freetype-enabled ffmpeg; if that combo isn't available the
   // render produces nothing. Fall back to the plain fill so a failed-scene slot is NEVER itself empty.
   if (fileSize(out) === 0 && chain !== base) {
-    await ffmpeg([...src, '-vf', base, '-frames:v', String(n), '-pix_fmt', 'yuv420p', '-an', out]);
+    await ffmpeg([...src, '-vf', base, '-frames:v', String(n), ...x264(), '-an', out]);
   }
   return out;
 }

@@ -590,19 +590,21 @@ function SettingsScreen() {
             <div className="space-y-3 border-t border-white/5 pt-3">
               <Field label="Local video model">
                 <div className="grid grid-cols-3 gap-2">
-                  {([['ltx', 'LTX-2.3', '896×512 · smooth flow · fast'], ['5b', 'Wan 5B', '480p · fast · softer'], ['14b', 'Wan 14B', '480p · sharp · slow']] as const).map(([m, t, sub]) => (
+                  {([['14b', 'Wan 14B', '480p→1080p · best quality'], ['ltx', 'LTX-2.3', '896×512 · smooth flow · fast'], ['5b', 'Wan 5B', '480p · fast · deforms people']] as const).map(([m, t, sub]) => (
                     <button key={m} onClick={() => vb.setSettings({ localVideoModel: m }).then(() => qc.invalidateQueries({ queryKey: ['settings'] }))}
                       className={cx('rounded-lg border px-3 py-2 text-left transition-colors',
-                        (settings.data!.localVideoModel || 'ltx') === m ? 'border-violet-400/60 bg-violet-500/10 text-slate-100' : 'border-white/10 hover:bg-white/[0.03] text-slate-300')}>
+                        (settings.data!.localVideoModel || '14b') === m ? 'border-violet-400/60 bg-violet-500/10 text-slate-100' : 'border-white/10 hover:bg-white/[0.03] text-slate-300')}>
                       <div className="text-sm font-medium">{t}</div><div className="text-xs text-slate-500">{sub}</div>
                     </button>
                   ))}
                 </div>
               </Field>
-              {(settings.data.localVideoModel || 'ltx') !== 'ltx' && (
+              {(settings.data.localVideoModel || '14b') !== 'ltx' && (
                 <Field label="Speed / quality">
                   <div className="grid grid-cols-2 gap-2">
-                    {([['fast', 'Fast · 10 steps', '~2 min/clip'], ['hd', 'Quality · 20 steps', '~4 min/clip, sharper']] as const).map(([q, t, sub]) => (
+                    {((settings.data.localVideoModel || '14b') === '14b'
+                      ? ([['fast', 'Fast · Lightning 4-step', '~4-5 min/clip'], ['hd', 'Quality · 40 steps', 'very slow (~38 min/clip)']] as const)
+                      : ([['fast', 'Fast · 10 steps', '~2 min/clip'], ['hd', 'Quality · 20 steps', '~4 min/clip, sharper']] as const)).map(([q, t, sub]) => (
                       <button key={q} onClick={() => vb.setSettings({ localQuality: q }).then(() => qc.invalidateQueries({ queryKey: ['settings'] }))}
                         className={cx('rounded-lg border px-3 py-2 text-left transition-colors',
                           settings.data!.localQuality === q ? 'border-violet-400/60 bg-violet-500/10 text-slate-100' : 'border-white/10 hover:bg-white/[0.03] text-slate-300')}>
@@ -612,9 +614,9 @@ function SettingsScreen() {
                   </div>
                 </Field>
               )}
-              <p className="text-xs text-slate-400">{(settings.data.localVideoModel || 'ltx') === 'ltx'
-                ? 'LTX-2.3 morphs each scene between its start & end keyframe → smooth, identity-anchored flow. Run bash local/setup.sh to fetch it.'
-                : 'Wan keeps 480p (720p needs more than 48GB on this Mac).'}</p>
+              <p className="text-xs text-slate-400">{(settings.data.localVideoModel || '14b') === 'ltx'
+                ? 'LTX-2.3 renders 896×512 fast with smooth flow; motion is weaker than Wan 14B. Run bash local/setup.sh to fetch it.'
+                : 'Wan renders 480p (720p needs more than 48GB on this Mac); the finish pass interpolates + upscales to 1080p.'}</p>
             </div>
           )}
         </Card>

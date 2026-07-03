@@ -147,7 +147,24 @@ function registerIpc() {
     return true;
   };
   ipcMain.handle('project:delete', (_e, pid: string) => rmUnder(pid));
-  ipcMain.handle('character:delete', (_e, cid: string) => rmUnder(path.join('characters', cid)));
+  ipcMain.handle('character:delete', (_e, cid: string) => {
+    const ok = rmUnder(path.join('characters', cid));
+    // Scrub the id from every project's cast: a dangling cast id used to be skipped SILENTLY at render
+    // time, so keyframes lost their reference with no error (e.g. the director invented a product).
+    for (const entry of fs.readdirSync(dataDir(), { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name === 'characters') continue;
+      const pj = path.join(dataDir(), entry.name, 'project.json');
+      try {
+        const p = JSON.parse(fs.readFileSync(pj, 'utf8'));
+        const before = (p.cast || []).length;
+        p.cast = (p.cast || []).filter((c: any) => (typeof c === 'object' ? c.id : c) !== cid);
+        if (p.cast.length !== before) fs.writeFileSync(pj, JSON.stringify(p, null, 2));
+      } catch {
+        /* not a project dir */
+      }
+    }
+    return ok;
+  });
 
   // Save the finished video to a user-chosen location (Save As). Returns the saved path or null if cancelled.
   ipcMain.handle('video:download', async (_e, pid: string) => {

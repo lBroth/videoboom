@@ -8,6 +8,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { spawn, ChildProcess } from 'node:child_process';
 import { env, envInt } from './config';
+import { FFMPEG, FFPROBE } from './ffmpeg';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -60,6 +61,9 @@ export async function ensureSidecar(): Promise<void> {
     server = spawn(py, [path.join(dir, 'server.py'), '--port', String(sidecarPort())], {
       cwd: dir,
       stdio: ['ignore', 'inherit', 'inherit'], // sidecar logs flow to the app's stdout/stderr
+      // Hand the bundled ffmpeg/ffprobe to the python handlers (interp/upscale extract + mux frames) so
+      // they never depend on a system ffmpeg being installed.
+      env: { ...process.env, VB_FFMPEG: FFMPEG, VB_FFPROBE: FFPROBE },
     });
     server.on('exit', () => {
       server = null;

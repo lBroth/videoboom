@@ -34,7 +34,9 @@ export const DEFAULTS: Settings = {
   sttLang: '',
   workers: 4,
   videoBackend: 'cloud',
-  localVideoModel: 'ltx',
+  // 14b = the project's own measured quality champion (sharp x16 VAE, no people-deform); 'ltx' is the
+  // explicit fast choice, '5b' the deprecated fast tier (x64 VAE deforms people).
+  localVideoModel: '14b',
   localQuality: 'fast',
   localWanDir: '',
   sttBackend: 'cloud',
@@ -80,8 +82,10 @@ export function settingsEnv(): Record<string, string> {
   if (s.keyframeBackend === 'local') env.VB_KEYFRAME_BACKEND = 'local';
   if (s.videoBackend === 'local') {
     env.VB_VIDEO_BACKEND = 'local';
-    env.VB_WORKERS = '1'; // serialise — one video model run already saturates unified memory
-    env.VB_LOCAL_VIDEO_MODEL = s.localVideoModel || 'ltx';
+    // Serialise GPU stages — one video model run already saturates unified memory. Network-bound stages
+    // (cloud keyframes) get their own pool width in the pipeline (VB_KF_WORKERS), NOT this one.
+    env.VB_WORKERS = '1';
+    env.VB_LOCAL_VIDEO_MODEL = s.localVideoModel || '14b';
     if (s.localVideoModel === 'ltx') {
       // LTX renders 896x512; match VB_W/VB_H so a failed-scene fill is the same size as the clips (concat),
       // and the keyframe (Kontext) so it isn't resized into the video.
@@ -96,15 +100,14 @@ export function settingsEnv(): Record<string, string> {
     // ── Wan 5B / 14B ──
     const hd = s.localQuality === 'hd';
     env.VB_LOCAL_QUALITY = hd ? 'hd' : 'fast';
-    // 480p (832×480). The default local i2v model is Wan2.2-TI2V-5B (~2.6x faster than the 14B, native
-    // ~10 steps); per-model frame caps live in localVideo (5B=57 @24fps ≈ 2.4s, 14B=37 @16fps). Keep 480p
-    // for the 5B's ~49GB peak; 720p risks OOM on 48GB. fast/hd only changes the 14B path (Lightning vs 40-step).
+    // 480p (832×480) for both Wan paths; 720p OOMs on 48GB. Per-model frame caps live in localVideo
+    // (5B=57 @24fps ≈ 2.4s, 14B=37 @16fps). fast/hd on the 14B = Lightning 4-step vs full 40-step.
     env.VB_W = '832';
     env.VB_H = '480';
     env.VB_WORKERS = '1';
-    // 5B (default) quality = native diffusion steps: fast=10 (~2min/clip), 'hd' label = 20 (~4min, sharper).
-    // Both 480p; 720p OOMs the 5B on 48GB. (The 14B path, env-only, ignores this and uses Lightning/40-step.)
-    env.VB_LOCAL_WAN_STEPS = hd ? '20' : '10';
+    // 5B ONLY: quality = native diffusion steps (fast=10 ≈ 2min/clip, hd=20). The 14B must NOT get a
+    // steps override here — it would defeat the Lightning 4-step default (10 steps ≈ 2.5x slower).
+    if (s.localVideoModel === '5b') env.VB_LOCAL_WAN_STEPS = hd ? '20' : '10';
     if (s.localWanDir) {
       env.VB_LOCAL_WAN_DIR = s.localWanDir;
       env.VB_LOCAL_WAN_5B_DIR = s.localWanDir;

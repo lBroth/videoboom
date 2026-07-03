@@ -5,8 +5,10 @@ import fs from 'node:fs';
 import { env, envInt } from './config';
 import { ensureSidecar, sidecarPost } from './sidecar';
 
+// Positive phrasing first ("blank, unbranded") — FLUX follows scene description far better than trailing
+// negations, and schnell has no negative-prompt channel at all.
 const NOSIGN =
-  '16:9 widescreen. No readable text, no letters, no words, no captions, no watermark, no logo. No Asian/Chinese/Japanese/Korean signage.';
+  '16:9 widescreen. Every surface, screen, sign and package in the scene is blank and unbranded — zero readable text anywhere. No letters, no words, no captions, no watermark, no logo. No Asian/Chinese/Japanese/Korean signage.';
 const TOON = '3D animated movie still, Pixar/DreamWorks style, vibrant stylized cartoon, clearly animated, NOT photorealistic';
 
 /** Stable per-scene seed from the output path so each scene differs but re-renders are deterministic. */
@@ -28,7 +30,9 @@ export async function keyframeLocal(prompt: string, outPath: string, refs: [stri
   if (ref && toon) {
     // Toon + cast: the reference is a real photo, so "preserve identity" + the photo overpower a trailing
     // toon tag → keep identity but make the toon style DOMINATE (convert the character to animated).
-    text = `${TOON}. Redraw the SAME character as the reference photo as a fully animated cartoon character — keep their identity (face shape, hair, build, age) but render them clearly stylized/cartoon, NOT photorealistic. Scene: ${prompt}. ${NOSIGN}`;
+    // A flat/pastel reference (e.g. a logo mascot) also drags the WHOLE frame into a monochrome logo-style
+    // wash — demand a fully rendered world around the character.
+    text = `${TOON}. Redraw the SAME character as the reference photo as a fully animated cartoon character — keep their identity (face shape, hair, build, age) but render them clearly stylized/cartoon, NOT photorealistic. The character is INSIDE a fully rendered, detailed 3D environment with rich BALANCED cinematic colors and proper lighting — never a flat monochrome logo-style illustration, never a single-color wash. Scene: ${prompt}. ${NOSIGN}`;
   } else if (ref) {
     text = `Place this EXACT person into a new cinematic scene, preserving their identity (face, hair, age, build). Scene: ${prompt}. ${vstyle}. ${NOSIGN}`;
   } else {
