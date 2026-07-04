@@ -112,16 +112,43 @@ def _snap_4n1(n: int) -> int:
     return n - ((n - 1) % 4)
 
 
+def _wants_relay(model_dir: str) -> bool:
+    """True for a DUAL model stored unquantized (bf16): both experts resident
+    would be ~54GB, so it only fits 48GB via relay-shedding (one expert at a
+    time, swapped at the timestep boundary). Quantized dirs (config carries a
+    "quantization" key) keep the stock mlx-video path untouched."""
+    import json
+    cfg = os.path.join(model_dir, "config.json")
+    try:
+        with open(cfg) as f:
+            c = json.load(f)
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(c.get("dual_model")) and "quantization" not in c
+
+
 def run_i2v(req: dict) -> dict:
     # Imported lazily so the server can answer /health before mlx-video is ready.
-    from mlx_video.models.wan_2.generate import generate_video
+    use_relay = _wants_relay(req["model_dir"])
+    if use_relay:
+        # Vendored fork of mlx-video's generate (local/relay_generate.py):
+        # bit-identical math (contract-tested vs parallel), only expert
+        # residency differs. Peak measured 36.8GB (Lightning/no-CFG) and
+        # 44.3GB (CFG) for bf16 A14B at 832x480x81f on 48GB.
+        # NOTE: the resident-weights memoization and tiny-VAE patches target
+        # the stock module; resident is incompatible with relay by design
+        # (memoizing both experts defeats the shedding), tiny-VAE is re-wired
+        # below where requested.
+        from relay_generate import generate_video
+    else:
+        from mlx_video.models.wan_2.generate import generate_video
 
     # Resident Wan weights across clips: OFF by default and UNUSABLE on 48GB — verified twice (2026-07-02,
     # even with compile-keep + tiny-VAE): clip 1 completes, then clip 2's 11GB bf16 T5 load on top of the
     # ~16GB resident transformers gets the process memory-killed by the kernel. Opt in
     # (VB_LOCAL_WAN_RESIDENT=1) only on 64/128GB Macs. On 48GB the reload savings come from the SMALL
     # components instead: tiny-VAE decode (done) + a resident int8 T5 (mlx-umt5, ~6.3GB — B3).
-    if int(req.get("resident", os.environ.get("VB_LOCAL_WAN_RESIDENT", "0"))):
+    if int(req.get("resident", os.environ.get("VB_LOCAL_WAN_RESIDENT", "0"))) and not use_relay:
         _ensure_resident()
     _set_wired_limit()
 
@@ -130,6 +157,12 @@ def run_i2v(req: dict) -> dict:
     if int(req.get("tiny_vae", os.environ.get("VB_LOCAL_TINY_VAE", "0"))):
         import tiny_vae
         tiny_vae.patch()
+        if use_relay:
+            # tiny_vae patches the STOCK module's loader; mirror it onto the
+            # relay fork so the shim applies there too.
+            import relay_generate
+            from mlx_video.models.wan_2 import generate as _stock_gen
+            relay_generate.load_vae_decoder = _stock_gen.load_vae_decoder
 
     model_dir = req["model_dir"]
     image = req["image"]
@@ -185,7 +218,10 @@ def run_i2v(req: dict) -> dict:
         output_path=out,
         negative_prompt=negative_prompt,
         scheduler=req.get("scheduler", "unipc"),
-        tiling=req.get("tiling", "auto"),
+        # bf16-relay runs closer to the 48GB ceiling than Q4 — "aggressive"
+        # VAE tiling is the measured-safe default there (81f probes at 36.8GB);
+        # quantized paths keep the historical "auto".
+        tiling=req.get("tiling", "aggressive" if use_relay else "auto"),
         # trim_first_frames is a T2V-only first-frame fix; it desyncs the I2V conditioning tensor (y is
         # built from num_frames, latents from num_frames+trim*4) → keep 0 for i2v. The first frame here is
         # the input image anyway.
