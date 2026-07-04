@@ -30,7 +30,7 @@ export interface LocalCapabilities {
 export interface SidecarEvent {
   event: string; stage?: string; total?: number; index?: number; status?: string;
   ok?: boolean; error?: string; videoKey?: string; scenesDone?: number; scenesFailed?: number;
-  costCents?: number; message?: string; projectId?: string; characterId?: string;
+  message?: string; projectId?: string; characterId?: string;
 }
 
 export interface VBApi {

@@ -3,7 +3,6 @@
 // — so the main process and renderer are unchanged. No child Python, no PyInstaller: the render engine is
 // TypeScript, ffmpeg is the bundled static binary, and all generation is the user's own cloud API calls.
 import { setEnv } from './config';
-import { costReset, costTotal } from './cost';
 import { dataDir, getProject } from './storage';
 import * as PL from './pipeline';
 
@@ -13,7 +12,7 @@ export type EngineEvent =
   | { event: 'stage'; stage: string; total?: number }
   | { event: 'keyframe'; index: number; ok: boolean }
   | { event: 'scene'; index: number; status: 'done' | 'failed'; error?: string }
-  | { event: 'done'; status: string; videoKey: string; scenesFailed: number; scenesDone: number; costCents: number }
+  | { event: 'done'; status: string; videoKey: string; scenesFailed: number; scenesDone: number }
   | { event: 'result'; [k: string]: unknown }
   | { event: 'error'; message: string; trace?: string }
   | { event: string; [k: string]: unknown };
@@ -59,32 +58,32 @@ async function dispatch(command: string, f: Record<string, string | boolean>, em
       return PL.characterCreate({ name: str(f.name), style: str(f.style), id: str(f.id) });
     case 'character-portrait': {
       const r = await PL.characterPortrait(str(f.character), str(f.photo), str(f.prompt), emit);
-      return { ...r, costCents: costTotal() };
+      return { ...r };
     }
     case 'render': {
       const pid = str(f.project);
       // --regen-story forces a fresh STT + storyboard; otherwise a cached storyboard for the same audio is reused.
       await PL.render(pid, emit, Boolean(f.preview), cancelled, Boolean(f['regen-story']));
       const p = getProject(pid) || {};
-      return { projectId: pid, status: p.status, videoKey: p.videoKey, costCents: costTotal() };
+      return { projectId: pid, status: p.status, videoKey: p.videoKey };
     }
     case 'resume': {
       const pid = str(f.project);
       await PL.resume(pid, emit, cancelled);
       const p = getProject(pid) || {};
-      return { projectId: pid, status: p.status, videoKey: p.videoKey, costCents: costTotal() };
+      return { projectId: pid, status: p.status, videoKey: p.videoKey };
     }
     case 'rerender-clips': {
       const pid = str(f.project);
       await PL.rerenderClips(pid, emit, cancelled);
       const p = getProject(pid) || {};
-      return { projectId: pid, status: p.status, videoKey: p.videoKey, costCents: costTotal() };
+      return { projectId: pid, status: p.status, videoKey: p.videoKey };
     }
     case 'regenerate-scene': {
       const pid = str(f.project);
       const index = parseInt(str(f.index, '0'), 10);
       await PL.regenerateScene(pid, index, emit);
-      return { projectId: pid, index, costCents: costTotal() };
+      return { projectId: pid, index };
     }
     case 'get-project':
       return { project: getProject(str(f.project)) };
@@ -109,7 +108,6 @@ export function runEngine(command: string, args: string[], extraEnv: Record<stri
   };
   const done = (async () => {
     setEnv({ ...extraEnv, VB_DATA_DIR: dataDir() });
-    costReset();
     const f = parseFlags(args);
     try {
       const payload = await dispatch(command, f, emit, () => cancelled);

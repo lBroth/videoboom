@@ -28,7 +28,7 @@ function useMedia(key?: string | null, bust?: unknown): string | null {
 }
 
 // ── live render runs (one per project; driven by the sidecar event stream) ──
-interface RunState { active: boolean; label: string; stage?: string; total?: number; done: number; cost?: number; error?: string }
+interface RunState { active: boolean; label: string; stage?: string; total?: number; done: number; finished?: boolean; error?: string }
 const RenderCtx = createContext<{
   runs: Record<string, RunState>;
   startRender: (pid: string, preview: boolean) => void;
@@ -50,7 +50,7 @@ function RenderProvider({ children }: { children: ReactNode }) {
         const next: RunState = { ...cur };
         if (e.event === 'stage') { next.stage = e.stage; if (e.total != null) next.total = e.total; if (e.stage === 'clips') next.done = 0; }
         else if (e.event === 'scene') next.done = (cur.done || 0) + 1;
-        else if (e.event === 'done') next.cost = e.costCents;
+        else if (e.event === 'done') next.finished = true;
         else if (e.event === 'error') next.error = e.message;
         return { ...r, [pid]: next };
       });
@@ -315,7 +315,7 @@ function VideoCard({ p }: { p: Project }) {
         </div>
         {active && <ProgressBar progress={p.progress || 0.05} message={runMessage(run)} />}
         {p.error && !active && <ErrorNote>{p.error}</ErrorNote>}
-        {run?.cost != null && !active && <div className="text-xs text-slate-400 flex items-center gap-1.5"><CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />Spent €{(run.cost / 100).toFixed(2)} on your providers{p.scenesFailed ? ` · ${p.scenesFailed} scene(s) failed` : ''}</div>}
+        {run?.finished && !active && <div className="text-xs text-slate-400 flex items-center gap-1.5"><CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />Finished{p.scenesFailed ? ` · ${p.scenesFailed} scene(s) failed` : ''}</div>}
         {!active && (
           <div className="flex flex-wrap gap-2">
             {canResume && <Button size="sm" variant="primary" icon={Plus} onClick={() => startResume(p.id)}>Finish full song</Button>}

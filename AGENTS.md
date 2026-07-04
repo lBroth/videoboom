@@ -77,13 +77,8 @@ calls. Ships for Windows / macOS / Linux.
   explicit character/reference image.
 - Prefer **medium/wide shots**; avoid tight close-ups until lip-sync is solved.
 
-## Cost
-- Track REAL provider cost in **cents** (`src/engine/cost.ts`, `costTotal()`); OpenRouter returns it in
-  `usage.cost` (send `usage:{include:true}`). The user sees the **at-cost** number — there is no margin
-  and no wallet. Record cost on success AND failure (partial cost on failed ops).
-
 ## Code quality
-- **No duplication.** Shared logic lives in ONE helper (config/env reads, storage paths, cost accounting,
+- **No duplication.** Shared logic lives in ONE helper (config/env reads, storage paths,
   the progress event emitter). Never copy a block across the engine modules — extract it.
 - **Reusable UI.** Build on the shared `renderer/components/ui.tsx` primitives (Button, Field, Card, …);
   don't re-implement inputs/buttons/modals per screen.

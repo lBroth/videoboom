@@ -3,7 +3,6 @@
 // word timings. Ported from the proven pipeline core; algorithms unchanged.
 import fs from 'node:fs';
 import { env, envBool, stageBackend } from './config';
-import { costAdd, orCost } from './cost';
 import { tmp } from './storage';
 import { toMp3_16k, moderationUri } from './ffmpeg';
 
@@ -72,7 +71,6 @@ export async function llmComplete(system: string, user: string, maxTokens = 2000
   for (let i = 0; i < 4; i++) {
     try {
       const r = await httpJson(OR + '/chat/completions', { method: 'POST', headers: orHdr(), body: JSON.stringify(body) }, 240_000);
-      costAdd(orCost(r));
       return r?.choices?.[0]?.message?.content || '';
     } catch {
       await sleep(2000);
@@ -101,7 +99,6 @@ export async function llmJson(system: string, user: string, schema: any, model?:
   for (let i = 0; i < 3; i++) {
     try {
       const r = await httpJson(OR + '/chat/completions', { method: 'POST', headers: orHdr(), body: JSON.stringify(body) }, 240_000);
-      costAdd(orCost(r));
       let txt: string = r?.choices?.[0]?.message?.content || '';
       txt = txt.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
       try {
@@ -247,7 +244,6 @@ async function transcribeWhisperx(audioPath: string): Promise<Word[] | null> {
     }
   }
   if (!words.length) return null;
-  costAdd(parseFloat(env('VB_WHISPERX_CENTS', '1.5')));
   return words;
 }
 
@@ -318,7 +314,6 @@ export async function cloudKeyframe(prompt: string, outPath: string, refs: [stri
       await sleep(2000);
       continue;
     }
-    costAdd(orCost(r));
     const out = r?.choices?.[0]?.message?.images || [];
     const url: string = out.length ? out[0]?.image_url?.url || '' : '';
     if (url.includes(',')) {
@@ -348,7 +343,6 @@ export async function vlmCaption(imgPath: string): Promise<string> {
   const body = { model, max_tokens: 200, temperature: 0.4, usage: { include: true }, messages: [{ role: 'user', content }] };
   try {
     const r = await httpJson(OR + '/chat/completions', { method: 'POST', headers: orHdr(), body: JSON.stringify(body) }, 120_000);
-    costAdd(orCost(r));
     return (r?.choices?.[0]?.message?.content || '').trim();
   } catch {
     return '';
@@ -380,7 +374,6 @@ export async function moderateImage(path: string): Promise<[boolean, string[]]> 
   try {
     const r = await httpJson(OR + '/chat/completions', { method: 'POST', headers: orHdr(), body: JSON.stringify(body) }, 60_000);
     out = (r?.choices?.[0]?.message?.content || '').trim();
-    costAdd(orCost(r));
   } catch (ex) {
     console.error('moderation error (fail-open):', String(ex));
     return [true, []];
@@ -472,7 +465,6 @@ export async function genVideo(
       }
     }
     if (status === 'completed') {
-      costAdd(orCost(r));
       const urls = r.unsigned_urls || [`${OR}/videos/${jid}/content?index=0`];
       try {
         const ac = new AbortController();
