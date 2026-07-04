@@ -112,24 +112,35 @@ def _snap_4n1(n: int) -> int:
     return n - ((n - 1) % 4)
 
 
+def _model_config(model_dir: str) -> dict:
+    import json
+    try:
+        with open(os.path.join(model_dir, "config.json")) as f:
+            return json.load(f)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def _wants_relay(model_dir: str) -> bool:
     """True for a DUAL model stored unquantized (bf16): both experts resident
     would be ~54GB, so it only fits 48GB via relay-shedding (one expert at a
     time, swapped at the timestep boundary). Quantized dirs (config carries a
     "quantization" key) keep the stock mlx-video path untouched."""
-    import json
-    cfg = os.path.join(model_dir, "config.json")
-    try:
-        with open(cfg) as f:
-            c = json.load(f)
-    except Exception:  # noqa: BLE001
-        return False
+    c = _model_config(model_dir)
     return bool(c.get("dual_model")) and "quantization" not in c
 
 
 def run_i2v(req: dict) -> dict:
     # Imported lazily so the server can answer /health before mlx-video is ready.
     use_relay = _wants_relay(req["model_dir"])
+    # FastWan DMD distill (draft tier): exact trained step list + renoise
+    # sampler, CFG off, euler. Marked by "fastwan_dmd" in the model config.
+    fastwan_spec = _model_config(req["model_dir"]).get("fastwan_dmd")
+    if fastwan_spec:
+        import fastwan_dmd
+        dmd_steps = fastwan_dmd.patch(fastwan_spec)
+        req = dict(req, steps=dmd_steps, guide_scale="1", scheduler="euler")
+        req.setdefault("tiling", "aggressive")
     if use_relay:
         # Vendored fork of mlx-video's generate (local/relay_generate.py):
         # bit-identical math (contract-tested vs parallel), only expert
