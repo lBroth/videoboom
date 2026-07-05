@@ -1,6 +1,6 @@
-// Local keyframe stage via the shared sidecar (mflux FLUX). Mirrors providers.cloudKeyframe's
+// Local keyframe stage via the shared sidecar (mflux FLUX). Backs stages.keyframe's
 // (prompt, outPath, refs, toon) -> boolean contract. A single identity reference (the lead) routes through
-// FLUX Kontext; no reference -> FLUX schnell text->image. Used when VB_KEYFRAME_BACKEND=local.
+// FLUX Kontext; no reference -> FLUX schnell text->image.
 import fs from 'node:fs';
 import { env, envInt } from './config';
 import { ensureSidecar, sidecarPost } from './sidecar';

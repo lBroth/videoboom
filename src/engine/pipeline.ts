@@ -4,7 +4,7 @@
 // frame-grid logic is a verbatim port of the proven pipeline.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import { env, envInt, envBool, stageBackend } from './config';
+import { env, envInt, envBool } from './config';
 import * as S from './storage';
 
 /** Read up to the first + last 256KB of a file into one buffer (cheap content fingerprint for large media). */
@@ -23,7 +23,7 @@ function fsReadHeadTail(path: string, size: number): Buffer {
   }
 }
 import { FPS, probeDuration, toPng, putThumb, trimToWindow, stillClip, ffmpeg, toWav, lastFrame, concatClips, x264, conformClip } from './ffmpeg';
-import * as P from './providers';
+import * as P from './stages';
 import { genVideoLocal, localNativeFps, localMaxFrames } from './localVideo';
 import { ensureSidecar, sidecarPost } from './sidecar';
 import { segmentSong, windowVocalCoverage, windowEnergy } from './segment';
@@ -36,10 +36,9 @@ const never: Cancelled = () => false;
 const MIN_SCENES = 4;
 const MAX_SCENES = 60;
 const workers = () => Math.max(1, envInt('VB_WORKERS', 4));
-// Keyframe pool width. VB_WORKERS=1 (the local-video GPU guard) must not serialize CLOUD keyframes —
-// they're network-bound HTTP calls (~50 of them at 5-15s each = minutes of pure serialization). Local
-// keyframes share the GPU, so they keep the GPU pool width.
-const kfWorkers = () => (stageBackend('KEYFRAME') === 'cloud' ? Math.max(workers(), envInt('VB_KF_WORKERS', 4)) : workers());
+// Keyframe pool width. Keyframes are on-device (FLUX/Kontext) and share the GPU, so they use the same
+// serialized pool as the rest of the render (VB_WORKERS, forced to 1 for the local video GPU guard).
+const kfWorkers = () => workers();
 
 class Cancel extends Error {}
 function checkCancel(cancelled: Cancelled): void {
@@ -240,17 +239,19 @@ async function storyboard(pid: string, emit: Emit, preview: boolean): Promise<vo
   const song = S.tmp(`song_${pid}.wav`);
   await toWav(inPath, song);
   const dur = (await probeDuration(song)) || 0;
-  const words = await P.transcribeWords(song);
-  const whisperText = (words || [])
+  // Only a genuine STT failure stops the render. An instrumental track transcribes fine to zero words —
+  // that's legitimate (the storyboard runs in instrumental mode off the energy windows), so empty words
+  // must NOT be treated as an error for music videos or ads.
+  const stt = await P.transcribe(song);
+  if (!stt.ok) {
+    S.updateProject(pid, { status: 'failed', stage: 'failed', error: `Could not read the song's audio (transcription failed): ${stt.error}` });
+    throw new Error('transcription failed');
+  }
+  const words = stt.words;
+  const whisperText = words
     .map((w) => w.word || '')
     .join(' ')
     .trim();
-  // Music videos need lyrics to drive the story; ads can run on an instrumental track (the spot's beats
-  // come from the energy windows + the product brief), so don't require words there.
-  if (format !== 'ad' && whisperText.length < 40) {
-    S.updateProject(pid, { status: 'failed', stage: 'failed', error: "Could not read the song's words (no audible vocals)." });
-    throw new Error('no lyrics');
-  }
   // Scenes follow the vocal phrasing (~6s). The Wan model renders each scene as one continuous shot of
   // chained native sub-clips (renderClip), so longer scenes no longer mean slow-motion — and the video has
   // fewer cuts. VB_LOCAL_SCENE_SEC can tune the target.
@@ -380,7 +381,7 @@ async function buildKeyframe(pid: string, k: number, p: any, toon: boolean, refr
   let prompt = stripWrittenText(sc.prompt || '');
   if (refresh) prompt = `${prompt}, ${refresh}, no extreme close-up`;
   S.mkdirp(S.mediaPath(`${pid}/keyframes`));
-  if (!(await P.cloudKeyframe(prompt, out, refsForScene(p, sc), toon))) return null;
+  if (!(await P.keyframe(prompt, out, refsForScene(p, sc), toon))) return null;
   await putThumb(out, `${pid}/keyframes/scene_${k}_thumb.jpg`);
   return out;
 }
@@ -720,7 +721,7 @@ export async function characterPortrait(cid: string, uploadKey: string, prompt: 
     // Description-only character → generate a portrait from the text.
     const base = 'polished cinematic character portrait, studio lighting, neutral background, head and shoulders, looking at camera, photorealistic, no text or letters';
     const out = S.tmp(`char_ai_${cid}.png`);
-    const ok = await P.cloudKeyframe(`${prompt}, ${base}`, out);
+    const ok = await P.keyframe(`${prompt}, ${base}`, out);
     primary = ok ? out : null;
     aiGenerated = ok;
   }

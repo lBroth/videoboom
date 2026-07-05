@@ -1,6 +1,5 @@
-// Local LLM stage (story bible + shot list) via the shared sidecar (mlx-lm). Mirrors providers.llmComplete
-// / llmJson: plain text, and JSON via the same tolerant extraction. The cloud model slug is ignored — local
-// always uses VB_LOCAL_LLM_MODEL. Used when VB_LLM_BACKEND=local.
+// Local LLM stage (story bible + shot list) via the shared sidecar (mlx-lm). Backs stages.llmJson: JSON via
+// a tolerant extraction, plus a plain-text completion helper. Always uses VB_LOCAL_LLM_MODEL.
 import { env, envInt } from './config';
 import { ensureSidecar, sidecarPost } from './sidecar';
 

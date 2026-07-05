@@ -1,5 +1,5 @@
 // Local VLM stage via the shared sidecar (mlx-vlm, gemma-3). Portrait captioning + a fail-open image-safety
-// check, both reusing the same on-device vision model. Used when VB_VLM_BACKEND=local.
+// check, both reusing the same on-device vision model. Backs stages.vlmCaption / stages.moderateImage.
 import { env, envInt } from './config';
 import { ensureSidecar, sidecarPost } from './sidecar';
 
@@ -29,7 +29,7 @@ export async function vlmCaptionLocal(imgPath: string): Promise<string> {
   }
 }
 
-/** Fail-open safety check (mirrors providers.moderateImage). Returns [safe, codes]. */
+/** Fail-open safety check (backs stages.moderateImage). Returns [safe, codes]. */
 export async function moderateImageLocal(path: string): Promise<[boolean, string[]]> {
   let out: string;
   try {

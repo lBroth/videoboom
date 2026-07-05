@@ -2,7 +2,7 @@
 // contiguous scene segments aligned to sung PHRASES (+ standalone INSTRUMENTAL spans) so each clip is
 // generated at its EXACT length (no time-stretch) and the visuals sync to the singing.
 import { decodePcm } from './ffmpeg';
-import type { Word } from './providers';
+import type { Word } from './stages';
 
 export const MAX_WORD_SEC = 4.0;
 
