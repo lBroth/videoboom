@@ -57,7 +57,7 @@ export async function ensureSidecar(): Promise<void> {
   starting = (async () => {
     const py = localPython();
     if (!fs.existsSync(py)) {
-      throw new Error('Local model sidecar is not installed. Run `bash local/setup.sh` first.');
+      throw new Error("The on-device engine isn't installed yet — open Settings → On-device and click Install.");
     }
     const dir = localDir();
     // config.setEnv() writes the injected paths into a module CFG map, NOT process.env, so the Python child

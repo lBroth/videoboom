@@ -4,8 +4,9 @@
 // stay local" finishes the wizard with every stage on-device. Gated by settings.onboarded.
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Shield, Cloud, KeyRound, Sparkles, Check, ExternalLink } from 'lucide-react';
+import { Shield, Cloud, KeyRound, Sparkles, Check, ExternalLink, Cpu } from 'lucide-react';
 import { Button, Card, inputCls, cx } from './components/ui';
+import { EngineSetup } from './App';
 import logo from './logo.png';
 
 const vb = window.vb;
@@ -51,16 +52,22 @@ export function Onboarding({ onFinish }: { onFinish: () => void }) {
   const caps = useQuery({ queryKey: ['localCaps'], queryFn: () => vb.localCapabilities() });
   const keys = useQuery({ queryKey: ['keysStatus'], queryFn: () => vb.keysStatus() });
   const resolved = useQuery({ queryKey: ['resolved'], queryFn: () => vb.resolvedBackends(), enabled: false });
-  const [step, setStep] = useState<'welcome' | 'keys' | 'done'>('welcome');
+  const engine = useQuery({ queryKey: ['engineState'], queryFn: () => vb.engineState() });
+  const [step, setStep] = useState<'welcome' | 'keys' | 'provision' | 'done'>('welcome');
   const [busy, setBusy] = useState(false);
 
   const supported = caps.data?.supported;
+  // Offer the optional engine-install step only when this Mac can run it and the engine isn't there yet.
+  const canProvision = !!supported && engine.data === 'not-bootstrapped';
   const refreshKeys = () => { qc.invalidateQueries({ queryKey: ['keysStatus'] }); qc.invalidateQueries({ queryKey: ['resolved'] }); };
   const finish = async () => {
     setBusy(true);
     try { await vb.setSettings({ onboarded: true }); onFinish(); } finally { setBusy(false); }
   };
   const goDone = () => { qc.invalidateQueries({ queryKey: ['resolved'] }); resolved.refetch(); setStep('done'); };
+  // Terminal action of the welcome/done steps: on a supported-but-un-provisioned Mac, offer the optional
+  // engine-setup step first; otherwise finish (keyless first run still ends cleanly with no engine).
+  const finishOrProvision = () => { if (canProvision) setStep('provision'); else finish(); };
 
   return (
     <div className="min-h-full flex items-center justify-center p-6 animate-fade-up">
@@ -93,7 +100,7 @@ export function Onboarding({ onFinish }: { onFinish: () => void }) {
               )
             )}
             <div className="flex flex-col gap-2 pt-1">
-              <Button onClick={finish} disabled={busy} className="w-full justify-center">
+              <Button onClick={finishOrProvision} disabled={busy} className="w-full justify-center">
                 <Sparkles className="w-4 h-4" /> Skip — stay local
               </Button>
               <button onClick={() => setStep('keys')} className="text-sm text-slate-400 hover:text-slate-200 inline-flex items-center justify-center gap-1.5 py-1">
@@ -142,7 +149,27 @@ export function Onboarding({ onFinish }: { onFinish: () => void }) {
             </div>
             <div className="flex items-center justify-between pt-1">
               <button onClick={() => setStep('keys')} className="text-sm text-slate-500 hover:text-slate-300">← Back</button>
-              <Button onClick={finish} disabled={busy} className="justify-center"><Sparkles className="w-4 h-4" /> Start</Button>
+              <Button onClick={finishOrProvision} disabled={busy} className="justify-center"><Sparkles className="w-4 h-4" /> Start</Button>
+            </div>
+          </>
+        )}
+
+        {step === 'provision' && (
+          <>
+            <div className="flex items-center gap-2">
+              <Cpu className="w-4 h-4 text-violet-300" />
+              <span className="text-sm font-semibold text-slate-100">Set up the on-device engine</span>
+            </div>
+            <p className="text-sm text-slate-400">
+              Install the local AI runtime now so your first video renders fully on this Mac — private, no key, no cost.
+              You can always do this later in Settings → On-device.
+            </p>
+            <EngineSetup compact />
+            <div className="flex items-center justify-between pt-1">
+              <button onClick={() => setStep('welcome')} className="text-sm text-slate-500 hover:text-slate-300">← Back</button>
+              <Button onClick={finish} disabled={busy} className="justify-center">
+                <Sparkles className="w-4 h-4" /> {engine.data === 'not-bootstrapped' ? 'Do this later' : 'Continue'}
+              </Button>
             </div>
           </>
         )}

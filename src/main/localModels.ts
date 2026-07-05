@@ -134,7 +134,7 @@ export function downloadModel(stage: string, onEvent: (e: any) => void): Downloa
   }
   const py = venvPython();
   if (!fs.existsSync(py)) {
-    return { done: Promise.reject(new Error('Local sidecar not installed — run `bash local/setup.sh` first.')), cancel: () => {} };
+    return { done: Promise.reject(new Error('Install the on-device engine first (Settings → On-device).')), cancel: () => {} };
   }
   let child: ChildProcess;
   try {

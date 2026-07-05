@@ -597,10 +597,10 @@ function VideoQuality({ settings, patch }: { settings: Settings; patch: (p: Part
 
 // One stage row: tri-state Auto·Local·Cloud (Cloud key-gated) + the resolver's resolved badge + a download
 // affordance / video-quality / cloud-video note, gated on how the stage actually resolved.
-function StageBackendRow({ row, settings, keys, resolved, patch }: {
+function StageBackendRow({ row, settings, keys, resolved, engineState, patch }: {
   row: (typeof STAGE_ROWS)[number];
   settings: Settings; keys: Record<string, boolean>;
-  resolved?: Record<Stage, ResolvedStage>; patch: (p: Partial<Settings>) => void;
+  resolved?: Record<Stage, ResolvedStage>; engineState?: EngineStateValue; patch: (p: Partial<Settings>) => void;
 }) {
   const { id, label, provider, model, size } = row;
   const sel = settings.stages[id];
@@ -632,7 +632,10 @@ function StageBackendRow({ row, settings, keys, resolved, patch }: {
       {localResolved && !rs?.localAvailable && (
         <div className="text-xs text-amber-200/80">Not runnable on this Mac — add your {provLabel} key below, then pick Cloud.</div>
       )}
-      {localResolved && rs?.localAvailable && <ModelDownload stage={id} model={model} size={size} />}
+      {/* You can't download a model before the engine exists — gate the per-stage Download behind Install (§7). */}
+      {localResolved && rs?.localAvailable && (engineState === 'not-bootstrapped'
+        ? <div className="text-xs text-slate-400">Set up the on-device engine (below) to download this model.</div>
+        : <ModelDownload stage={id} model={model} size={size} />)}
       {id === 'VIDEO' && localResolved && <VideoQuality settings={settings} patch={patch} />}
       {id === 'VIDEO' && rs?.backend === 'cloud' && (
         <div className="text-xs text-slate-500">Cloud video: Kling · 1280×720</div>
@@ -661,11 +664,99 @@ function BackendModeControl({ value, anyKey, onChange }: {
   );
 }
 
+// The tri-state the resolver/guard expose (vb.engineState()); the renderer only reads it, never computes it.
+type EngineStateValue = 'unsupported' | 'not-bootstrapped' | 'partial' | 'ready';
+
+// ── On-device engine bootstrap (drives the M3g backend) ───────────────────────────────────────────────
+// Friendly labels for the bootstrap phase stream (python→venv→deps→harden→verify).
+const ENGINE_PHASE_LABEL: Record<string, string> = {
+  python: 'Installing Python…',
+  venv: 'Creating environment…',
+  deps: 'Installing model runtime…',
+  harden: 'Signing for macOS…',
+  verify: 'Verifying…',
+};
+// Each phase's [start%, span%] slice of one smooth overall bar (deps dominates; the only phase with sub-pct).
+const ENGINE_PHASE_WEIGHT: Record<string, [number, number]> = {
+  python: [0, 8], venv: [8, 4], deps: [12, 68], harden: [80, 12], verify: [92, 8],
+};
+
+// The one-time "install the on-device engine" affordance: uv-managed CPython + the MLX runtime, all under
+// userData. Drives vb.startBootstrap()/onBootstrap; on {done} it invalidates engineState/modelStatus/
+// bootstrapStatus so the surrounding UI advances Install → Download → Render. The caller gates it on
+// engineState==='not-bootstrapped'; `compact` trims chrome for the onboarding step.
+export function EngineSetup({ compact = false }: { compact?: boolean }) {
+  const qc = useQueryClient();
+  const [run, setRun] = useState<{ phase: string; pct?: number } | null>(null);
+  const [done, setDone] = useState(false);
+  const [err, setErr] = useState('');
+  const offRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => { offRef.current?.(); }, []);   // drop the stream listener on unmount
+
+  const install = () => {
+    setErr(''); setDone(false); setRun({ phase: 'python' });
+    let settled = false;
+    const off = vb.onBootstrap((e) => {
+      if (settled) return;
+      if (e.event === 'phase' && e.phase) setRun({ phase: e.phase, pct: e.phase === 'deps' ? 0 : undefined });
+      else if (e.event === 'progress') setRun((r) => ({ phase: e.phase || r?.phase || 'deps', pct: e.pct }));
+      else if (e.event === 'error') {
+        settled = true; off();
+        const where = e.phase && ENGINE_PHASE_LABEL[e.phase] ? ENGINE_PHASE_LABEL[e.phase].replace('…', '') : '';
+        setErr(where ? `${where} failed — ${e.error || 'unknown error'}` : (e.error || 'Install failed.'));
+        setRun(null);
+      } else if (e.event === 'done') {
+        settled = true; off(); setRun(null); setDone(true);
+        ['engineState', 'modelStatus', 'bootstrapStatus', 'localCaps', 'resolved'].forEach((q) => qc.invalidateQueries({ queryKey: [q] }));
+      }
+    });
+    offRef.current = off;
+    vb.startBootstrap().catch((e2) => {
+      if (settled) return;
+      settled = true; off(); setErr(String(e2?.message || e2)); setRun(null);
+    });
+  };
+
+  const cancel = () => { vb.cancelBootstrap(); offRef.current?.(); setRun(null); };
+
+  const [start, span] = run ? (ENGINE_PHASE_WEIGHT[run.phase] || [0, 0]) : [0, 0];
+  const overall = run ? (start + span * (run.phase === 'deps' ? (run.pct ?? 0) / 100 : 0)) / 100 : 0;
+
+  return (
+    <div className={cx('rounded-xl border border-violet-400/30 bg-violet-500/[0.07] space-y-3', compact ? 'p-3' : 'p-4')}>
+      {!compact && (
+        <div className="flex items-center gap-2">
+          <Download className="w-4 h-4 text-violet-300" />
+          <span className="text-sm font-semibold text-slate-100">Install the on-device engine</span>
+        </div>
+      )}
+      <p className="text-xs text-slate-400">
+        Sets up the local AI runtime so everything renders on this Mac — no key, no cloud.{' '}
+        <span className="text-slate-300">~500 MB · a few minutes, one time.</span>
+      </p>
+      {done ? (
+        <div className="flex items-center gap-2 text-sm text-emerald-300"><CheckCircle2 className="w-4 h-4" /> On-device engine ready.</div>
+      ) : run ? (
+        <div className="space-y-2">
+          <ProgressBar progress={overall} message={ENGINE_PHASE_LABEL[run.phase] || 'Setting up…'} />
+          <button onClick={cancel} className="text-xs text-slate-500 hover:text-slate-300">Cancel</button>
+        </div>
+      ) : (
+        <Button variant="primary" size="sm" icon={Download} onClick={install}>Install</Button>
+      )}
+      {err && <ErrorNote>{err}</ErrorNote>}
+    </div>
+  );
+}
+
 // On-device (Hardware) — never gated on a key. sttLang / workers / localWanDir are on-device knobs a keyless
 // user must reach; an unsupported verdict nudges toward Cloud but disables nothing.
-function HardwareCard({ settings, caps, patch }: {
-  settings: Settings; caps: LocalCapabilities; patch: (p: Partial<Settings>) => void;
+function HardwareCard({ settings, caps, engineState, patch }: {
+  settings: Settings; caps: LocalCapabilities; engineState?: EngineStateValue; patch: (p: Partial<Settings>) => void;
 }) {
+  // 'not-bootstrapped' is exactly "supported but no venv" — track the live query so the card advances on {done}
+  // (caps.depsInstalled is the fallback while engineState is still loading).
+  const notBootstrapped = engineState ? engineState === 'not-bootstrapped' : (caps.supported && !caps.depsInstalled);
   return (
     <Card className="p-5 space-y-4">
       <div className="flex items-center gap-2">
@@ -676,10 +767,8 @@ function HardwareCard({ settings, caps, patch }: {
         <div className="rounded-xl bg-amber-500/10 border border-amber-500/20 px-3 py-2.5 text-sm text-amber-200/90">
           On-device video needs an <b>Apple-Silicon Mac with {caps.minRamGB} GB+</b>. This machine can make videos via Cloud — add an OpenRouter key below (and a Replicate key for lyric timing).
         </div>
-      ) : !caps.depsInstalled ? (
-        <div className="rounded-xl bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-xs text-amber-200/90">
-          Local engine not installed yet — run <code className="text-amber-100">bash local/setup.sh</code> once (installs mlx + downloads the models).
-        </div>
+      ) : notBootstrapped ? (
+        <EngineSetup />
       ) : (
         <p className="text-sm text-slate-400 -mt-1">Local stages run on this Mac (MLX) — no key, no cloud, fully offline. Video needs ~24GB free at peak; {caps.recommendedRamGB}GB memory recommended.</p>
       )}
@@ -761,6 +850,7 @@ function SettingsScreen() {
   const caps = useQuery({ queryKey: ['localCaps'], queryFn: () => vb.localCapabilities() });
   const keys = useQuery({ queryKey: ['keysStatus'], queryFn: () => vb.keysStatus() });
   const resolved = useQuery({ queryKey: ['resolved'], queryFn: () => vb.resolvedBackends() });
+  const engine = useQuery({ queryKey: ['engineState'], queryFn: () => vb.engineState() });
   const [dataDir, setDataDir] = useState('');
   useEffect(() => { vb.dataDir().then(setDataDir); }, []);
 
@@ -800,11 +890,11 @@ function SettingsScreen() {
           <span className="text-xs text-slate-500 ml-auto">where each step runs</span>
         </div>
         {STAGE_ROWS.map((row) => (
-          <StageBackendRow key={row.id} row={row} settings={s} keys={k} resolved={resolved.data} patch={patch} />
+          <StageBackendRow key={row.id} row={row} settings={s} keys={k} resolved={resolved.data} engineState={engine.data} patch={patch} />
         ))}
       </Card>
 
-      <HardwareCard settings={s} caps={caps_} patch={patch} />
+      <HardwareCard settings={s} caps={caps_} engineState={engine.data} patch={patch} />
 
       <Card className="p-5 space-y-4">
         <div className="flex items-center gap-2">

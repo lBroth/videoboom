@@ -49,7 +49,7 @@ export async function genVideoLocal(img: string, prompt: string, outMp4: string,
   const model = videoModel();
   const md = modelDir();
   if (!md || !fs.existsSync(md)) {
-    return [false, 'Local video model not found. Run `bash local/setup.sh` (or set the model dir env).'];
+    return [false, 'Download the on-device video model in Settings → On-device.'];
   }
   try {
     await ensureSidecar();
