@@ -80,19 +80,18 @@ function streamOp(opId: string, command: string, args: string[], extraEnv?: Reco
 const RUNS = new Map<string, ReturnType<typeof runEngine>>();
 const DOWNLOADS = new Map<string, DownloadRun>();
 
-// Stages whose Local backend is selected but whose model isn't installed yet — render is blocked until
-// they're downloaded (in Settings). Maps each backend setting to its model-status key + a friendly label.
+// The on-device stages a render needs, and whether their model is installed. Everything runs locally, so a
+// render is blocked until each of these is downloaded (in Settings). VLM (face caption) is portrait-only, so
+// it isn't a render prerequisite.
+const RENDER_STAGES: [string, string][] = [
+  ['STT', 'Lyric timing'],
+  ['LLM', 'Story & shots'],
+  ['KEYFRAME', 'Keyframes'],
+  ['VIDEO', 'Video (Wan)'],
+];
 function missingLocalModels(): string[] {
-  const s = getSettings();
   const st = modelStatus();
-  const map: [keyof Settings, string, string][] = [
-    ['videoBackend', 'VIDEO', 'Video (Wan)'],
-    ['sttBackend', 'STT', 'Lyric timing'],
-    ['llmBackend', 'LLM', 'Story & shots'],
-    ['vlmBackend', 'VLM', 'Face caption'],
-    ['keyframeBackend', 'KEYFRAME', 'Keyframes'],
-  ];
-  return map.filter(([field, key]) => (s as any)[field] === 'local' && st[key] !== 'ready').map(([, , label]) => label);
+  return RENDER_STAGES.filter(([key]) => st[key] !== 'ready').map(([, label]) => label);
 }
 
 // Refuse an op and surface the reason on its own progress channel (the renderer is listening there).

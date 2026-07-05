@@ -6,12 +6,15 @@ import os from 'node:os';
 import fs from 'node:fs';
 import { spawn, ChildProcess } from 'node:child_process';
 
-// Mirror of local/download.py STAGE_REPOS (status only — the python side owns the actual download).
+// Mirror of local/download.py STAGE_REPOS (status only — the python side owns the actual download). VIDEO
+// lists the Wan-AI source repo; download.py snapshots + converts it to MLX (readiness is the setup marker,
+// see videoReady/modelStatus — not a raw repo-cache check).
 const STAGE_REPOS: Record<string, string[]> = {
   STT: ['mlx-community/whisper-large-v3-turbo'],
   LLM: ['lmstudio-community/Qwen3.6-35B-A3B-MLX-4bit'],
   VLM: ['mlx-community/gemma-3-12b-it-4bit'],
   KEYFRAME: ['dhairyashil/FLUX.1-schnell-mflux-4bit', 'akx/FLUX.1-Kontext-dev-mflux-4bit'],
+  VIDEO: ['Wan-AI/Wan2.2-I2V-A14B'],
 };
 
 function localDir(): string {
@@ -47,6 +50,9 @@ function videoReady(): boolean {
 const MIN_RAM_GB = 32; // biggest single stage (Wan i2v ~24GB) + macOS/app overhead
 const RECOMMENDED_RAM_GB = 48;
 
+// The ONE place the required-hardware spec is written — reused by every "this machine can't run it" message.
+export const HARDWARE_SPEC = `an Apple Silicon Mac (M-series) with ${MIN_RAM_GB}GB+ unified memory (${RECOMMENDED_RAM_GB}GB recommended)`;
+
 export interface LocalCapabilities {
   platform: string; // 'darwin' | 'win32' | 'linux'
   arch: string; // 'arm64' | 'x64'
@@ -68,9 +74,9 @@ export function localCapabilities(): LocalCapabilities {
   const isAppleSilicon = platform === 'darwin' && arch === 'arm64';
   const depsInstalled = fs.existsSync(localPython());
   let reason = '';
-  if (platform !== 'darwin') reason = 'On-device models currently require macOS (Apple Silicon).';
-  else if (arch !== 'arm64') reason = 'On-device models require an Apple Silicon Mac (M-series).';
-  else if (ramGB < MIN_RAM_GB) reason = `Needs ${MIN_RAM_GB}GB+ unified memory — this Mac has ${ramGB}GB.`;
+  if (platform !== 'darwin') reason = `Videoboom needs ${HARDWARE_SPEC}. This is not macOS.`;
+  else if (arch !== 'arm64') reason = `Videoboom needs ${HARDWARE_SPEC}. This Mac isn't Apple Silicon.`;
+  else if (ramGB < MIN_RAM_GB) reason = `Videoboom needs ${HARDWARE_SPEC}. This Mac has ${ramGB}GB.`;
   return {
     platform,
     arch,
@@ -86,11 +92,13 @@ export function localCapabilities(): LocalCapabilities {
 
 export type StageState = 'ready' | 'absent';
 
-/** Per-stage model availability. VIDEO (Wan) is provisioned by setup.sh; the rest by the Download button. */
+/** Per-stage model availability. VIDEO (Wan) readiness is the converted-model setup marker (download.py or
+ * setup.sh provisions it); the rest are ready once their HF repos are in the cache (Download button). */
 export function modelStatus(): Record<string, StageState> {
   const out: Record<string, StageState> = {};
-  for (const [stage, repos] of Object.entries(STAGE_REPOS)) out[stage] = repos.every(repoReady) ? 'ready' : 'absent';
-  out.VIDEO = videoReady() ? 'ready' : 'absent';
+  for (const [stage, repos] of Object.entries(STAGE_REPOS)) {
+    out[stage] = stage === 'VIDEO' ? (videoReady() ? 'ready' : 'absent') : repos.every(repoReady) ? 'ready' : 'absent';
+  }
   return out;
 }
 
