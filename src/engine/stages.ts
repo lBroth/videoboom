@@ -117,6 +117,13 @@ export function keyframeConcurrency(): number {
   return R.keyframe().concurrency();
 }
 
+// ── video (on-device Wan chain / cloud Kling morph) ────────────────────────────────
+/** The resolved VIDEO backend — owns the whole keyframe+clip loop (renderScenes / refreshScene) plus the
+ * timeline-resolution / upscale / GPU signals the pipeline reads. */
+export function video(): import('./backends/types').VideoBackend {
+  return R.video();
+}
+
 // ── VLM (portrait caption + upload safety) ─────────────────────────────────────────
 export async function vlmCaption(imgPath: string): Promise<string> {
   return R.vlm().vlmCaption(imgPath);

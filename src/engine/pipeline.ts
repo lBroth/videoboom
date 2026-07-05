@@ -1,10 +1,10 @@
-// Render orchestration: storyboard -> keyframe pass -> clip pass -> assemble. Async + local. Each scene's
-// clip renders via genVideoLocal (mlx-video sidecar) inside a bounded concurrency pool. Progress is
-// reported through an `emit(event)` callback the engine turns into IPC events. Segmentation / shot-list /
-// frame-grid logic is a verbatim port of the proven pipeline.
+// Render orchestration: storyboard -> P.video().renderScenes (keyframe + clip loop) -> assemble. This module
+// names NO backend — the resolved VIDEO backend (local Wan chain / cloud Kling morph) owns the whole scene
+// loop behind the VideoBackend interface; the pipeline only builds the SceneRenderCtx and runs assemble.
+// Progress is reported through an `emit(event)` callback the engine turns into IPC events.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import { env, envInt, envBool } from './config';
+import { env, envInt } from './config';
 import { costTotal } from './cost';
 import * as S from './storage';
 
@@ -23,75 +23,19 @@ function fsReadHeadTail(path: string, size: number): Buffer {
     fs.closeSync(fd);
   }
 }
-import { FPS, probeDuration, toPng, putThumb, trimToWindow, stillClip, ffmpeg, toWav, lastFrame, concatClips, x264, conformClip } from './ffmpeg';
+import { FPS, probeDuration, toPng, putThumb, stillClip, ffmpeg, toWav, x264, conformClip } from './ffmpeg';
 import * as P from './stages';
-import { genVideoLocal, localNativeFps, localMaxFrames } from './localVideo';
+import { assertCastExists } from './backends/sceneShared';
 import { ensureSidecar, sidecarPost } from './sidecar';
 import { segmentSong, windowVocalCoverage, windowEnergy } from './segment';
+import type { Emit, Cancelled, SceneRenderCtx } from './backends/types';
 
-export type Emit = (e: any) => void;
-export type Cancelled = () => boolean;
+export type { Emit, Cancelled };
 const noop: Emit = () => {};
 const never: Cancelled = () => false;
 
 const MIN_SCENES = 4;
 const MAX_SCENES = 60;
-const workers = () => Math.max(1, envInt('VB_WORKERS', 4));
-// Keyframe pool width. Keyframes are on-device (FLUX/Kontext) and share the GPU, so they use the same
-// serialized pool as the rest of the render (VB_WORKERS, forced to 1 for the local video GPU guard).
-const kfWorkers = () => workers();
-
-class Cancel extends Error {}
-function checkCancel(cancelled: Cancelled): void {
-  if (cancelled()) throw new Cancel('cancelled');
-}
-
-/** Run fn over items with a bounded concurrency (mirrors the old ThreadPoolExecutor(max_workers)). */
-async function mapPool<T, R>(items: T[], limit: number, fn: (item: T, i: number) => Promise<R>): Promise<R[]> {
-  const ret: R[] = new Array(items.length);
-  let idx = 0;
-  const n = Math.max(1, Math.min(limit, items.length || 1));
-  await Promise.all(
-    Array.from({ length: n }, async () => {
-      for (;;) {
-        const i = idx++;
-        if (i >= items.length) break;
-        ret[i] = await fn(items[i], i);
-      }
-    }),
-  );
-  return ret;
-}
-
-// ── cast / refs ───────────────────────────────────────────────────────────────
-function castRoles(p: any): Record<string, string> {
-  const roles: Record<string, string> = {};
-  (p.cast || []).forEach((c: any, i: number) => {
-    const cid = typeof c === 'object' ? c.id : c;
-    if (cid) roles[cid] = (typeof c === 'object' ? c.role : null) || (i === 0 ? 'lead' : 'supporting');
-  });
-  return roles;
-}
-
-function refsForScene(p: any, scene: any): [string, string][] {
-  const roles = castRoles(p);
-  const leadId = Object.keys(roles)[0] || null;
-  let cids: string[] = (scene.characters || []).filter(Boolean);
-  if (!cids.length && leadId) cids = [leadId];
-  const cap = envInt('VB_MAX_SUBJECTS', 4);
-  const out: [string, string][] = [];
-  for (const cid of cids.slice(0, cap)) {
-    const rk = `characters/${cid}/primary.png`;
-    if (!S.mediaExists(rk)) continue;
-    const lp = S.mediaPath(rk);
-    const ch = S.getCharacter(cid) || {};
-    let label = ch.name || 'character';
-    const role = roles[cid];
-    if (role && role !== 'lead') label = `${label} (the ${role})`;
-    out.push([lp, label]);
-  }
-  return out;
-}
 
 // ── prompts ──────────────────────────────────────────────────────────────────--
 const SYS = 'You are an award-winning music-video director. Output ONLY one valid JSON object.';
@@ -345,188 +289,7 @@ async function storyboard(pid: string, emit: Emit, preview: boolean): Promise<vo
   });
 }
 
-// ── keyframe + clip passes ──────────────────────────────────────────────────--
-function keyframePath(pid: string, k: number): string {
-  return S.mediaPath(`${pid}/keyframes/scene_${k}.png`);
-}
-
-/** The LLM still sneaks renderable text into shot descriptions as quoted literals (a green 'SHIP IT'
- * button) despite the no-text rules — and the image model then draws it garbled. Deterministic last line
- * of defense: strip quoted literals and "that says/labeled ..." phrasings before the prompt reaches any
- * image/video model. The composition survives; the lettering never gets asked for. */
-function stripWrittenText(s: string): string {
-  return String(s || '')
-    .replace(/"[^"]{1,40}"/g, '')                     // double-quoted literals
-    .replace(/[“”‘’][^“”‘’]{1,40}[“”‘’]/g, '')        // curly-quoted literals
-    .replace(/'[A-Z0-9][A-Z0-9 !._-]{1,30}'/g, '')    // single-quoted ALL-CAPS labels ('SHIP IT') — not apostrophes
-    .replace(/\b(?:that (?:says|reads)|which (?:says|reads)|reading|labell?ed|with the words?|text saying|saying)\b[^,.;]*/gi, '')
-    .replace(/\s{2,}/g, ' ')
-    .replace(/\s+([,.;])/g, '$1');
-}
-
-function putSceneMerged(pid: string, k: number, sc: any, updates: Record<string, unknown>): void {
-  const cur = { ...sc, ...updates };
-  delete cur.projectId;
-  delete cur.index;
-  S.putScene(pid, k, cur);
-}
-
-async function buildKeyframe(pid: string, k: number, p: any, toon: boolean, refresh = ''): Promise<string | null> {
-  const key = `${pid}/keyframes/scene_${k}.png`;
-  const out = keyframePath(pid, k);
-  const sc = S.getScene(pid, k) || {};
-  if (!refresh && S.mediaExists(key)) {
-    await putThumb(out, `${pid}/keyframes/scene_${k}_thumb.jpg`);
-    return out;
-  }
-  let prompt = stripWrittenText(sc.prompt || '');
-  if (refresh) prompt = `${prompt}, ${refresh}, no extreme close-up`;
-  S.mkdirp(S.mediaPath(`${pid}/keyframes`));
-  if (!(await P.keyframe(prompt, out, refsForScene(p, sc), toon))) return null;
-  await putThumb(out, `${pid}/keyframes/scene_${k}_thumb.jpg`);
-  return out;
-}
-
-/** Render a local scene as ONE continuous shot: chain native-length sub-clips — each i2v from the previous
- * clip's last frame (the first from the keyframe) — to fill the scene, then concatenate. This fills a long
- * scene with real motion instead of stretching one short clip (slow-motion), so we can use fewer/longer
- * scenes (fewer cuts). A scene that already fits in one native clip just renders directly. */
-async function renderLocalScene(pid: string, k: number, kfFirst: string, clipPrompt: string, wdur: number, raw: string, seed: number, emit: Emit): Promise<[boolean, string]> {
-  // Native clip budget from the SELECTED model (the 14B is 16fps — assuming 24 here used to overestimate
-  // nativeSec, so chained totals could come out SHORTER than the scene window).
-  const fps = Math.max(1, localNativeFps());
-  const nativeSec = localMaxFrames() / fps; // one native clip (~2.3s)
-  const nSub = Math.max(1, Math.ceil(wdur / nativeSec)); // 1 only when the scene fits one native clip
-  // Render native clips (snapped to 4n+1 frames) so the total is always >= the window and renderClip
-  // can TRIM (never stretch). A single-clip scene also renders a full native clip, then gets trimmed down.
-  if (nSub <= 1) return genVideoLocal(kfFirst, clipPrompt, raw, nativeSec, seed);
-  // Sub-clips chain (each continues from the prior clip's last frame) so the total covers the scene
-  // window — renderClip then TRIMS the excess (no slow-motion). The LAST sub-clip only renders what's
-  // left of the window (+ margin for the 4n+1 down-snap): a full native clip there is denoise time the
-  // trim just throws away (up to ~1 clip of GPU per scene).
-  const subs: string[] = [];
-  let startImg = kfFirst;
-  for (let i = 0; i < nSub; i++) {
-    const remaining = wdur - i * nativeSec;
-    const secs = i === nSub - 1 ? Math.max(1, Math.min(nativeSec, remaining + 0.35)) : nativeSec;
-    const subOut = S.tmp(`sub_${pid}_${k}_${i}.mp4`);
-    const [sok, serr] = await genVideoLocal(startImg, clipPrompt, subOut, secs, seed + i);
-    if (!sok) return [false, serr];
-    subs.push(subOut);
-    emit({ event: 'subclip', index: k, sub: i + 1, total: nSub });
-    if (i < nSub - 1) {
-      const lf = await lastFrame(subOut, S.tmp(`lf_${pid}_${k}_${i}.png`));
-      if (lf) startImg = lf; // continue the motion from the last frame
-    }
-  }
-  return (await concatClips(subs, raw)) ? [true, ''] : [false, 'failed to assemble chained sub-clips'];
-}
-
-async function renderClip(pid: string, k: number, p: any, kfFirst: string, emit: Emit, seed = 42): Promise<[boolean, string]> {
-  const sc = S.getScene(pid, k) || {};
-  const wdur = Math.max(0.4, Number(sc.endSec || 0) - Number(sc.startSec || 0) || 4);
-  // The storyboard's per-scene motion direction (explicit camera move + chained subject action) leads the
-  // prompt — i2v models default to a timid push-in without an explicit camera instruction, and appearance
-  // text is redundant (the start image already fixes the look). Fallback: the generic per-energy phrase.
-  const motion = String(sc.motion || '').trim() || P.MOTION[sc.energy || 'medium'] || P.MOTION.medium;
-  const raw = S.tmp(`raw_${pid}_${k}.mp4`);
-  // Carry the look into the video prompt so the model keeps it (esp. toon — otherwise it can drift realistic).
-  const vstyle = p.videoStyle === 'toon'
-    ? '3D animated cartoon, Pixar/DreamWorks style, clearly animated, NOT photorealistic'
-    : env('VB_VISUAL_STYLE', '');
-  const clipPrompt = stripWrittenText(`${motion}. ${sc.prompt || ''}, cinematic${vstyle ? ', ' + vstyle : ''}`);
-  // Wan renders each scene as one continuous shot: a single start frame per native clip, chained into a
-  // long shot (renderLocalScene) so a long scene has real motion instead of one stretched slow-mo clip.
-  const [ok, err] = await renderLocalScene(pid, k, kfFirst, clipPrompt, wdur, raw, seed, emit);
-  if (!ok) {
-    const reason = P.isContentBlock(err) ? "This scene was blocked by the model's safety filter." : `Scene render failed: ${(err || '').slice(0, 160)}`;
-    putSceneMerged(pid, k, sc, { status: 'failed', error: reason });
-    emit({ event: 'scene', index: k, status: 'failed', error: reason });
-    return [false, reason];
-  }
-  // Chained clips are already >= the window → TRIM to the exact frame-grid slot (real speed, never slow-mo).
-  const sceneOut = S.tmp(`scene_${pid}_${k}.mp4`);
-  const fit = await trimToWindow(raw, sc.startSec || 0, sc.endSec || 0, sceneOut);
-  S.copyIn(fit, `${pid}/clips/scene_${k}.mp4`);
-  // Chained 'continue' scenes have no keyframe file (they start from the previous clip's last frame) —
-  // give the UI a real thumbnail by grabbing the finished clip's first frame.
-  if (!S.mediaExists(`${pid}/keyframes/scene_${k}.png`)) {
-    S.mkdirp(S.mediaPath(`${pid}/keyframes`));
-    const kfOut = keyframePath(pid, k);
-    if (await ffmpeg(['-i', fit, '-frames:v', '1', kfOut])) await putThumb(kfOut, `${pid}/keyframes/scene_${k}_thumb.jpg`);
-  }
-  putSceneMerged(pid, k, sc, { status: 'done', error: '', clipKey: `${pid}/clips/scene_${k}.mp4` });
-  emit({ event: 'scene', index: k, status: 'done' });
-  return [true, ''];
-}
-
-/** Local continuous-chain render: keyframes only for CUT scenes (the LLM decides cut/continue, an anti-drift
- * cap forces a cut every VB_LOCAL_CHAIN_MAX scenes); clips render SEQUENTIALLY so a 'continue' scene starts
- * from the previous scene's last frame. Fewer keyframes (faster) + seamless motion between scenes. */
-async function renderScenesLocalChained(pid: string, p: any, toRender: number[], target: number, toon: boolean, emit: Emit, cancelled: Cancelled): Promise<{ projectId: string; videoKey: string }> {
-  const MAX = Math.max(1, envInt('VB_LOCAL_CHAIN_MAX', 4));
-  // Decide cut vs continue in render order (first scene + LLM 'cut' + anti-drift cap force a fresh keyframe).
-  const cut: Record<number, boolean> = {};
-  let run = 0;
-  toRender.forEach((k, i) => {
-    const sc = S.getScene(pid, k) || {};
-    const isCut = i === 0 || sc.transition === 'cut' || run >= MAX;
-    cut[k] = isCut;
-    run = isCut ? 0 : run + 1;
-  });
-
-  // keyframe pass — CUT scenes only; group by ref variant so the heavy keyframe model swaps at most once.
-  const cutScenes = toRender.filter((k) => cut[k]);
-  const hasRef = (k: number) => refsForScene(p, S.getScene(pid, k) || {}).length > 0;
-  const ordered = [...cutScenes].sort((a, b) => (hasRef(a) ? 1 : 0) - (hasRef(b) ? 1 : 0) || a - b);
-  emit({ event: 'stage', stage: 'keyframes', total: ordered.length });
-  const kfPaths: Record<number, string | null> = {};
-  await mapPool(ordered, kfWorkers(), async (k) => {
-    checkCancel(cancelled);
-    kfPaths[k] = await buildKeyframe(pid, k, p, toon);
-    emit({ event: 'keyframe', index: k, ok: Boolean(kfPaths[k]) });
-  });
-
-  // clip pass — SEQUENTIAL: a continue scene starts from the previous scene's last frame.
-  emit({ event: 'stage', stage: 'clips', total: toRender.length });
-  let prevLast: string | null = null;
-  for (const k of toRender) {
-    checkCancel(cancelled);
-    let start = cut[k] ? kfPaths[k] : prevLast;
-    if (!start) start = await buildKeyframe(pid, k, p, toon); // chain broke (or keyframe failed) → fresh keyframe
-    const sc = S.getScene(pid, k) || {};
-    if (!start) {
-      putSceneMerged(pid, k, sc, { status: 'failed', error: 'Could not get a start frame for this scene.' });
-      emit({ event: 'scene', index: k, status: 'failed', error: 'no start frame' });
-      prevLast = null;
-      continue;
-    }
-    const [ok] = await renderClip(pid, k, p, start, emit);
-    prevLast = null;
-    if (ok) {
-      const clipKey = `${pid}/clips/scene_${k}.mp4`;
-      if (S.mediaExists(clipKey)) prevLast = await lastFrame(S.mediaPath(clipKey), S.tmp(`chain_last_${pid}_${k}.png`));
-    }
-    const d = S.listScenes(pid).filter((s) => s.status === 'done').length;
-    S.updateProject(pid, { scenesDone: d, progress: Math.round((0.3 + (0.6 * Math.min(d, target)) / Math.max(1, target)) * 1000) / 1000 });
-  }
-  return assemble(pid, emit);
-}
-
-/** A cast id whose character was deleted must FAIL the render loudly — silently dropping the reference
- * (the old behavior) produces confidently wrong videos: keyframes lose the identity/product anchor and
- * the director invents its own subject. */
-function assertCastExists(pid: string, p: any): void {
-  const missing = (p.cast || [])
-    .map((c: any) => (typeof c === 'object' ? c.id : c))
-    .filter((cid: string) => cid && !S.mediaExists(`characters/${cid}/primary.png`));
-  if (missing.length) {
-    const msg = 'A cast member of this project no longer exists (deleted character). Re-select the cast in Studio, then render again.';
-    S.updateProject(pid, { status: 'failed', stage: 'failed', error: msg });
-    throw new Error('cast member missing');
-  }
-}
-
+// ── scene render (backend-agnostic) ────────────────────────────────────────────
 async function renderScenes(pid: string, emit: Emit, cancelled: Cancelled): Promise<{ projectId: string; videoKey: string }> {
   const p = S.getProject(pid) || {};
   assertCastExists(pid, p);
@@ -543,50 +306,11 @@ async function renderScenes(pid: string, emit: Emit, cancelled: Cancelled): Prom
   // Reset progress to the keyframe-phase baseline so a resume/re-render doesn't show the previous run's 100%.
   S.updateProject(pid, { status: 'rendering', stage: 'rendering', progress: 0.3, previewScenes: done.size + toRender.length, renderStartedAt: Date.now() / 1000 });
 
-  // Wan renders as a (mostly) continuous chain — the LLM marks each scene cut/continue, a 'continue' scene
-  // starts from the previous scene's last frame, an anti-drift cap forces a fresh keyframe. VB_LOCAL_CHAIN=0
-  // falls back to the parallel per-scene path below (each scene from its own fresh keyframe, no continuity).
-  if (envBool('VB_LOCAL_CHAIN', true)) {
-    return renderScenesLocalChained(pid, p, toRender, target, toon, emit, cancelled);
-  }
-
-  // keyframe pass — one keyframe per scene we render. Order so all no-ref (FLUX txt2img) scenes run together
-  // and all ref (FLUX Kontext) scenes run together, so a cast-mixed project swaps the heavy keyframe model
-  // at most once instead of thrashing it per scene.
-  const hasRef = (k: number) => refsForScene(p, S.getScene(pid, k) || {}).length > 0;
-  const needed = [...toRender].sort((a, b) => (hasRef(a) ? 1 : 0) - (hasRef(b) ? 1 : 0) || a - b);
-  emit({ event: 'stage', stage: 'keyframes', total: needed.length });
-  const kfPaths: Record<number, string | null> = {};
-  let kfDone = 0;
-  await mapPool(needed, kfWorkers(), async (k) => {
-    checkCancel(cancelled);
-    const path = await buildKeyframe(pid, k, p, toon);
-    kfPaths[k] = path;
-    kfDone++;
-    // Keyframe phase fills 0.3 -> 0.5 so the bar moves while keyframes generate (the clip pass takes 0.5->1).
-    S.updateProject(pid, { progress: Math.round((0.3 + (0.2 * kfDone) / Math.max(1, needed.length)) * 1000) / 1000 });
-    emit({ event: 'keyframe', index: k, ok: Boolean(path) });
-  });
-
-  for (const k of toRender) {
-    if (!kfPaths[k]) {
-      const sc = S.getScene(pid, k) || {};
-      putSceneMerged(pid, k, sc, { status: 'failed', error: 'Keyframe generation failed.' });
-      emit({ event: 'scene', index: k, status: 'failed', error: 'keyframe failed' });
-    }
-  }
-
-  // clip pass — render each scene whose keyframe exists.
-  const renderable = toRender.filter((k) => kfPaths[k]);
-  emit({ event: 'stage', stage: 'clips', total: renderable.length });
-  await mapPool(renderable, workers(), async (k) => {
-    checkCancel(cancelled);
-    await renderClip(pid, k, p, kfPaths[k]!, emit);
-    const d = S.listScenes(pid).filter((s) => s.status === 'done').length;
-    // Clip pass fills 0.5 -> 1 (the keyframe pass took 0.3 -> 0.5).
-    S.updateProject(pid, { scenesDone: d, progress: Math.round((0.5 + (0.5 * Math.min(d, target)) / Math.max(1, target)) * 1000) / 1000 });
-  });
-
+  // The resolved VIDEO backend owns the entire keyframe+clip loop for these scenes (local Wan continuous
+  // chain vs cloud Kling first+last morph). The pipeline names no backend — it just hands over the ctx and
+  // runs the shared `assemble` afterward, once, for either backend.
+  const ctx: SceneRenderCtx = { pid, p, toRender, target, toon, emit, cancelled };
+  await P.video().renderScenes(ctx);
   return assemble(pid, emit);
 }
 
@@ -676,19 +400,13 @@ export async function regenerateScene(pid: string, k: number, emit: Emit): Promi
 
   const vary = REFRESH_VARIATIONS[Math.trunc(Date.now() / 1000) % REFRESH_VARIATIONS.length];
   emit({ event: 'stage', stage: 'keyframes', total: 1 });
-  const fk = await buildKeyframe(pid, k, p, toon, vary);
-  if (!fk) {
-    S.putScene(pid, k, { status: 'failed', error: 'Keyframe generation failed.', ...keep });
-    throw new Error(`keyframe generation failed for scene ${k}`);
-  }
-  emit({ event: 'stage', stage: 'clips', total: 1 });
-  const [ok, err] = await renderClip(pid, k, p, fk, emit);
+  // The resolved VIDEO backend owns the fresh keyframe + clip and any neighbour re-render (the cloud morph
+  // re-renders scene k-1 with the new keyframe as its last_frame); it sets the scene status itself on failure.
+  const ctx: SceneRenderCtx = { pid, p, toRender: [k], target: Number(p.sceneCount || 0), toon, emit, cancelled: never };
+  const [ok, err] = await P.video().refreshScene(ctx, k, vary);
   if (!ok) {
     S.updateProject(pid, { status: 'failed', stage: 'failed', error: err });
     throw new Error(err);
-  }
-  if (k > 0 && S.mediaExists(`${pid}/keyframes/scene_${k - 1}.png`)) {
-    await renderClip(pid, k - 1, p, keyframePath(pid, k - 1), emit);
   }
   return assemble(pid, emit);
 }
@@ -783,10 +501,11 @@ async function assemble(pid: string, emit: Emit): Promise<{ projectId: string; v
 
   // ── finish chain (both steps best-effort — on any failure the plain concat plays) ──────────────
   let master = silent;
-  // 1) Upscale: local diffusion emits 832×480/896×512 — watched fullscreen that reads soft no matter how
+  // 1) Upscale: the local backend emits 832×480/896×512 — watched fullscreen that reads soft no matter how
   //    good the denoise was. One Real-ESRGAN pass (sidecar /upscale, Apple GPU — idle by assemble time)
-  //    to 1080p. Runs once on the whole timeline: every clip + failed-scene fill shares one size here.
-  if (envBool('VB_LOCAL_UPSCALE', true)) {
+  //    to 1080p. Runs once on the whole timeline: every clip + failed-scene fill shares one size here. The
+  //    resolved VIDEO backend decides whether this runs (local → true; cloud already near-HD → false).
+  if (P.video().needsUpscale()) {
     try {
       await ensureSidecar();
       const up = `${work}/output/upscaled.mp4`;

@@ -122,6 +122,23 @@ export async function trimToWindow(raw: string, startSec: number, endSec: number
   return out;
 }
 
+/** Conform a generated clip to EXACTLY its scene's frame-grid slot so concatenated scenes stay locked to
+ * the song with NO cumulative drift (boundaries snapped to round(t*fps); counts telescope across scenes).
+ * Measures the raw clip and retimes (setpts) to the exact frame-count duration. Audio stripped. Used for the
+ * cloud backend (clips may be shorter/longer than the window); local uses trimToWindow. */
+export async function fitToWindow(raw: string, startSec: number, endSec: number, out: string, fps = FPS): Promise<string> {
+  fps = Math.trunc(fps || FPS);
+  const s0 = Number(startSec || 0);
+  const s1 = Number(endSec || 0);
+  const nFrames = Math.max(1, Math.round(s1 * fps) - Math.round(s0 * fps));
+  const target = nFrames / fps;
+  const rawDur = (await probeDuration(raw)) || target;
+  let factor = rawDur && rawDur > 0 ? target / rawDur : 1.0;
+  factor = Math.min(8.0, Math.max(0.05, factor));
+  await ffmpeg(['-i', raw, '-vf', `setpts=${factor.toFixed(6)}*PTS,fps=${fps}`, '-frames:v', String(nFrames), ...x264(), '-an', out]);
+  return out;
+}
+
 /** Pixel dimensions [w, h] of a video's first video stream, or null if unreadable. */
 export async function probeDimensions(p: string): Promise<[number, number] | null> {
   const r = await run(FFPROBE, ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=s=x:p=0', p]);
