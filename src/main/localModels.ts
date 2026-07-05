@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 import { spawn, ChildProcess } from 'node:child_process';
+import { codeDir, venvPython, hfCacheDir, markerDir, localEnv } from './paths';
 
 // Mirror of local/download.py STAGE_REPOS (status only — the python side owns the actual download). VIDEO
 // lists the Wan-AI source repo; download.py snapshots + converts it to MLX (readiness is the setup marker,
@@ -17,20 +18,10 @@ const STAGE_REPOS: Record<string, string[]> = {
   VIDEO: ['Wan-AI/Wan2.2-I2V-A14B'],
 };
 
-function localDir(): string {
-  return process.env.VB_LOCAL_DIR || path.resolve(process.cwd(), 'local');
-}
-function localPython(): string {
-  return process.env.VB_LOCAL_PYTHON || path.join(localDir(), '.venv', 'bin', 'python');
-}
-function hfCache(): string {
-  if (process.env.HUGGINGFACE_HUB_CACHE) return process.env.HUGGINGFACE_HUB_CACHE;
-  if (process.env.HF_HOME) return path.join(process.env.HF_HOME, 'hub');
-  return path.join(os.homedir(), '.cache', 'huggingface', 'hub');
-}
+// Path resolution (dev vs packaged) lives in paths.ts; this module consumes it (no duplicate resolvers).
 
 function repoReady(repo: string): boolean {
-  const snaps = path.join(hfCache(), 'models--' + repo.replace(/\//g, '--'), 'snapshots');
+  const snaps = path.join(hfCacheDir(), 'models--' + repo.replace(/\//g, '--'), 'snapshots');
   try {
     return fs.existsSync(snaps) && fs.readdirSync(snaps).some((s) => fs.readdirSync(path.join(snaps, s)).length > 0);
   } catch {
@@ -40,7 +31,7 @@ function repoReady(repo: string): boolean {
 
 function videoReady(): boolean {
   try {
-    const dir = (process.env.VB_LOCAL_WAN_DIR || fs.readFileSync(path.join(localDir(), '.model-path'), 'utf8')).trim();
+    const dir = (process.env.VB_LOCAL_WAN_DIR || fs.readFileSync(path.join(markerDir(), '.model-path'), 'utf8')).trim();
     return Boolean(dir) && fs.existsSync(path.join(dir, 't5_encoder.safetensors'));
   } catch {
     return false;
@@ -72,7 +63,7 @@ export function localCapabilities(): LocalCapabilities {
   const arch = process.arch;
   const ramGB = Math.round(os.totalmem() / 1024 ** 3);
   const isAppleSilicon = platform === 'darwin' && arch === 'arm64';
-  const depsInstalled = fs.existsSync(localPython());
+  const depsInstalled = fs.existsSync(venvPython());
   let reason = '';
   if (platform !== 'darwin') reason = `Videoboom needs ${HARDWARE_SPEC}. This is not macOS.`;
   else if (arch !== 'arm64') reason = `Videoboom needs ${HARDWARE_SPEC}. This Mac isn't Apple Silicon.`;
@@ -113,13 +104,13 @@ export function downloadModel(stage: string, onEvent: (e: any) => void): Downloa
   if (!(stage in STAGE_REPOS)) {
     return { done: Promise.reject(new Error(`stage ${stage} is not downloadable here`)), cancel: () => {} };
   }
-  const py = localPython();
+  const py = venvPython();
   if (!fs.existsSync(py)) {
     return { done: Promise.reject(new Error('Local sidecar not installed — run `bash local/setup.sh` first.')), cancel: () => {} };
   }
   let child: ChildProcess;
   try {
-    child = spawn(py, [path.join(localDir(), 'download.py'), stage], { cwd: localDir(), env: { ...process.env, HF_HUB_DISABLE_XET: '1' } });
+    child = spawn(py, [path.join(codeDir(), 'download.py'), stage], { cwd: codeDir(), env: { ...process.env, ...localEnv(), HF_HUB_DISABLE_XET: '1' } });
   } catch (e: any) {
     return { done: Promise.reject(e), cancel: () => {} };
   }

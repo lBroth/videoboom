@@ -24,7 +24,9 @@ export function localPython(): string {
 /** Read a path marker setup.sh wrote under local/ (e.g. .model-path, .lightning-dir), '' if absent. */
 export function readMarker(name: string): string {
   try {
-    return fs.readFileSync(path.join(localDir(), name), 'utf8').trim();
+    // Markers live in the WRITABLE marker dir (userData when packaged), not next to the read-only code.
+    const base = env('VB_LOCAL_MARKER_DIR', localDir());
+    return fs.readFileSync(path.join(base, name), 'utf8').trim();
   } catch {
     return '';
   }
@@ -58,12 +60,20 @@ export async function ensureSidecar(): Promise<void> {
       throw new Error('Local model sidecar is not installed. Run `bash local/setup.sh` first.');
     }
     const dir = localDir();
+    // config.setEnv() writes the injected paths into a module CFG map, NOT process.env, so the Python child
+    // wouldn't inherit them — forward the ones the handlers read (HF cache, marker + models dirs), skipping
+    // empties so we never override a child default with ''.
+    const passthru: Record<string, string> = {};
+    for (const k of ['HUGGINGFACE_HUB_CACHE', 'VB_LOCAL_MARKER_DIR', 'VB_LOCAL_MODELS_DIR']) {
+      const v = env(k);
+      if (v) passthru[k] = v;
+    }
     server = spawn(py, [path.join(dir, 'server.py'), '--port', String(sidecarPort())], {
       cwd: dir,
       stdio: ['ignore', 'inherit', 'inherit'], // sidecar logs flow to the app's stdout/stderr
       // Hand the bundled ffmpeg/ffprobe to the python handlers (interp/upscale extract + mux frames) so
       // they never depend on a system ffmpeg being installed.
-      env: { ...process.env, VB_FFMPEG: FFMPEG, VB_FFPROBE: FFPROBE },
+      env: { ...process.env, VB_FFMPEG: FFMPEG, VB_FFPROBE: FFPROBE, ...passthru },
     });
     server.on('exit', () => {
       server = null;

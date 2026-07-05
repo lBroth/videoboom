@@ -39,11 +39,14 @@ def download_video() -> None:
 
     here = os.path.dirname(os.path.abspath(__file__))
     models_dir = os.environ.get("VB_LOCAL_MODELS_DIR", os.path.join(here, "models"))
+    # Markers go in the WRITABLE marker dir (userData when packaged; the code dir is read-only there).
+    marker_dir = os.environ.get("VB_LOCAL_MARKER_DIR", here)
     bits = os.environ.get("VB_LOCAL_BITS", "4")
     os.makedirs(models_dir, exist_ok=True)
+    os.makedirs(marker_dir, exist_ok=True)
     src = os.path.join(models_dir, "Wan2.2-I2V-A14B")
     mlx = os.path.join(models_dir, f"Wan2.2-I2V-A14B-MLX-Q{bits}")
-    marker = os.path.join(here, ".model-path")
+    marker = os.path.join(marker_dir, ".model-path")
 
     def record(path: str) -> None:
         with open(marker, "w") as fh:
@@ -80,7 +83,7 @@ def download_video() -> None:
             local_dir=light_dir,
         )
     if os.path.exists(os.path.join(light_lora, "high_noise_model.safetensors")):
-        with open(os.path.join(here, ".lightning-dir"), "w") as fh:
+        with open(os.path.join(marker_dir, ".lightning-dir"), "w") as fh:
             fh.write(light_lora)
 
     record(mlx)

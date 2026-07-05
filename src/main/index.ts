@@ -12,6 +12,7 @@ const ICON = path.join(app.getAppPath(), 'icons', 'icon.png');
 import { getSettings, setSettings, Settings } from './settings';
 import { keyStatus, setKey, keysEnv } from './keychain';
 import { resolveConfig, type KeyState } from './autoconfig';
+import { localEnv } from './paths';
 import { CLOUD_HOSTS, hostAllowed } from '../shared/netAllowlist';
 import { modelStatus, downloadModel, localCapabilities, DownloadRun } from './localModels';
 import { getProject, listScenes, listProjects, listCharacters, mediaUrl } from './projects';
@@ -80,8 +81,9 @@ function resolvedConfig() {
 }
 
 function sidecarEnv(): Record<string, string> {
-  // Optional cloud keys (decrypted, main-process only) + the resolved per-stage backends / slugs / local block.
-  return { ...keysEnv(), ...resolvedConfig().toEnv() };
+  // Optional cloud keys (decrypted, main-process only) + the resolved per-stage backends / slugs / local block
+  // + the local path env (code/venv/models/markers/hf-cache — dev vs packaged, from paths.ts).
+  return { ...keysEnv(), ...resolvedConfig().toEnv(), ...localEnv() };
 }
 
 // ── network firewall (deny-by-default) ───────────────────────────────────────────
