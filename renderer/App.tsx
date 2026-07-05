@@ -4,7 +4,7 @@ import {
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Sparkles, Film, UserRound, Settings as SettingsIcon, Music, Plus, RotateCcw, Trash2,
-  KeyRound, Image as ImageIcon, Wand2, AlertTriangle, CheckCircle2, ExternalLink, ChevronRight, Download,
+  Image as ImageIcon, Wand2, AlertTriangle, CheckCircle2, ChevronRight, Download,
 } from 'lucide-react';
 import {
   Button, IconButton, Card, Field, Segmented, ProgressBar, Spinner, StatusDot, EmptyState,
@@ -104,8 +104,6 @@ const TABS: { key: TabKey; label: string; icon: typeof Sparkles }[] = [
 
 export default function App() {
   const [tab, setTab] = useState<TabKey>('create');
-  const keys = useQuery({ queryKey: ['keys'], queryFn: () => vb.keysStatus(), refetchInterval: 4000 });
-  const hasKey = !!keys.data?.openrouter;
 
   return (
     <RenderProvider>
@@ -129,15 +127,7 @@ export default function App() {
         </header>
 
         <main className="flex-1 w-full max-w-5xl mx-auto px-4 py-6">
-          {!hasKey && tab !== 'settings' && (
-            <button onClick={() => setTab('settings')}
-              className="w-full mb-5 flex items-center gap-3 rounded-2xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-left">
-              <KeyRound className="w-5 h-5 text-amber-300 shrink-0" />
-              <div className="text-sm"><b className="text-amber-200">Add your OpenRouter key</b>
-                <span className="text-amber-200/70"> — Videoboom uses your own API keys. Open Settings to paste one.</span></div>
-            </button>
-          )}
-          <div className={cx(tab !== 'create' && 'hidden')}><CreateVideo hasKey={hasKey} onDone={() => setTab('videos')} /></div>
+          <div className={cx(tab !== 'create' && 'hidden')}><CreateVideo onDone={() => setTab('videos')} /></div>
           <div className={cx(tab !== 'videos' && 'hidden')}><Videos /></div>
           <div className={cx(tab !== 'characters' && 'hidden')}><Characters /></div>
           <div className={cx(tab !== 'settings' && 'hidden')}><SettingsScreen /></div>
@@ -148,7 +138,7 @@ export default function App() {
 }
 
 // ── Create ──
-function CreateVideo({ hasKey, onDone }: { hasKey: boolean; onDone: () => void }) {
+function CreateVideo({ onDone }: { onDone: () => void }) {
   const chars = useQuery({ queryKey: ['chars'], queryFn: () => vb.listCharacters() });
   const { startRender } = useRender();
   const [audio, setAudio] = useState<string>('');
@@ -225,10 +215,9 @@ function CreateVideo({ hasKey, onDone }: { hasKey: boolean; onDone: () => void }
           { value: 'full', title: 'Full song', desc: 'every scene' },
         ]} />
         {err && <ErrorNote>{err}</ErrorNote>}
-        <Button variant="primary" size="lg" className="w-full" icon={Sparkles} loading={busy} disabled={!hasKey || !audio} onClick={go}>
+        <Button variant="primary" size="lg" className="w-full" icon={Sparkles} loading={busy} disabled={!audio} onClick={go}>
           Generate video
         </Button>
-        {!hasKey && <div className="text-xs text-amber-300/80 text-center">Add an OpenRouter key in Settings to generate.</div>}
       </Card>
 
       <Card className="p-5">
@@ -448,12 +437,6 @@ function CharCard({ c }: { c: Character }) {
 }
 
 // ── Settings ──
-const KEY_FIELDS: { name: string; label: string; hint: string; url: string; help: string }[] = [
-  { name: 'openrouter', label: 'OpenRouter API key', hint: 'required — story, images & video', url: 'https://openrouter.ai/keys',
-    help: 'Sign up at openrouter.ai, add a little credit, then Keys → Create key. One key covers the LLM, image and video models.' },
-  { name: 'replicate', label: 'Replicate API token', hint: 'required — lyric timing (WhisperX)', url: 'https://replicate.com/account/api-tokens',
-    help: 'Sign in with GitHub, open Account → API tokens, and copy your token. Used for WhisperX forced-aligned word timing — needed to read the lyrics and sync scenes.' },
-];
 const LOCAL_STAGES: { key: keyof Settings; stage: string; label: string; cloud: string; local: string; size: string }[] = [
   { key: 'sttBackend', stage: 'STT', label: 'Lyric timing (STT)', cloud: 'WhisperX · Replicate', local: 'whisper · mlx', size: '~1.6 GB' },
   { key: 'llmBackend', stage: 'LLM', label: 'Story & shot-list (LLM)', cloud: 'Claude / Gemini', local: 'Qwen3 · mlx-lm', size: '~19 GB' },
@@ -532,7 +515,6 @@ const MODEL_FIELDS: { key: keyof Settings; label: string }[] = [
 
 function SettingsScreen() {
   const qc = useQueryClient();
-  const keys = useQuery({ queryKey: ['keys'], queryFn: () => vb.keysStatus() });
   const settings = useQuery({ queryKey: ['settings'], queryFn: () => vb.getSettings() });
   const caps = useQuery({ queryKey: ['localCaps'], queryFn: () => vb.localCapabilities() });
   const status = useQuery({ queryKey: ['modelStatus'], queryFn: () => vb.modelsStatus() });
@@ -542,12 +524,6 @@ function SettingsScreen() {
 
   return (
     <div className="space-y-5 animate-fade-up max-w-2xl">
-      <Card className="p-5 space-y-4">
-        <div className="flex items-center gap-2"><KeyRound className="w-5 h-5 text-violet-300" /><h2 className="font-semibold text-slate-100">Your API keys</h2></div>
-        <p className="text-sm text-slate-400 -mt-1">Videoboom is bring-your-own-key: it calls the providers directly with <i>your</i> keys, so you pay them at cost — no markup. Keys are encrypted with your OS keychain and never leave this machine. You need <b className="text-slate-300">OpenRouter</b> (the essentials) and ideally <b className="text-slate-300">Replicate</b> (for accurate lyric timing).</p>
-        {KEY_FIELDS.map((f) => <KeyRow key={f.name} f={f} set={!!keys.data?.[f.name]} onSaved={() => qc.invalidateQueries({ queryKey: ['keys'] })} />)}
-      </Card>
-
       {settings.data && caps.data && (
         <Card className="p-5 space-y-4">
           <div className="flex items-center gap-2">
@@ -650,32 +626,6 @@ function SettingsScreen() {
 
       <Card className="p-4 text-xs text-slate-500">Projects are stored in <span className="text-slate-300 break-all">{dataDir}</span></Card>
     </div>
-  );
-}
-
-function KeyRow({ f, set, onSaved }: { f: { name: string; label: string; hint: string; url: string; help: string }; set: boolean; onSaved: () => void }) {
-  const [val, setVal] = useState('');
-  const [busy, setBusy] = useState(false);
-  const save = async () => {
-    setBusy(true);
-    try { await vb.setKey(f.name, val.trim()); setVal(''); onSaved(); } finally { setBusy(false); }
-  };
-  return (
-    <Field label={f.label} hint={f.hint}>
-      <div className="flex gap-2">
-        <input className={inputCls} type="password" value={val} onChange={(e) => setVal(e.target.value)}
-          placeholder={set ? '•••••••••• (saved — paste to replace)' : 'Paste your key'} />
-        <Button variant="soft" loading={busy} disabled={!val.trim()} onClick={save}>Save</Button>
-        {set && <span className="grid place-items-center px-1"><CheckCircle2 className="w-5 h-5 text-emerald-400" /></span>}
-      </div>
-      <div className="flex items-start gap-2 mt-1.5 text-xs text-slate-500">
-        <span className="flex-1 leading-snug">{f.help}</span>
-        <button onClick={() => vb.openExternal(f.url)}
-          className="shrink-0 inline-flex items-center gap-1 text-violet-300 hover:text-violet-200 font-medium">
-          Get a key <ExternalLink className="w-3.5 h-3.5" />
-        </button>
-      </div>
-    </Field>
   );
 }
 

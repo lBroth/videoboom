@@ -1,6 +1,6 @@
 // Main process: window lifecycle + the IPC surface the renderer calls. The renderer never spawns
-// processes or touches secrets — it asks main, main composes the BYOK env (keychain + settings) and runs
-// the sidecar, streaming progress events back over a channel.
+// processes — it asks main, main composes the on-device model env (settings) and runs the engine/sidecar,
+// streaming progress events back over a channel. Everything runs locally; there are no secrets.
 import { app, BrowserWindow, ipcMain, dialog, screen, shell } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -9,7 +9,6 @@ import { runEngine, dataDir, EngineEvent } from '../engine';
 // App icon — bundled under icons/ (inside app.asar when packaged). Used for the window (win/linux) and
 // the macOS dock in dev (packaged macOS gets its icon from the .app bundle automatically).
 const ICON = path.join(app.getAppPath(), 'icons', 'icon.png');
-import { keysEnv, keyStatus, setKey } from './keychain';
 import { settingsEnv, getSettings, setSettings, Settings } from './settings';
 import { modelStatus, downloadModel, localCapabilities, DownloadRun } from './localModels';
 import { getProject, listScenes, listProjects, listCharacters, mediaUrl } from './projects';
@@ -49,12 +48,12 @@ function runSmokeTest() {
         out.rendered = body.includes('Videoboom');
         out.createForm = body.includes('Generate video') || body.includes('Choose a song');
         out.tabs = ['Create','Videos','Cast','Settings'].every(t => body.includes(t));
-        try { out.keys = await window.vb.keysStatus(); } catch (e) { out.keysErr = String(e); }
+        try { out.caps = await window.vb.localCapabilities(); } catch (e) { out.capsErr = String(e); }
         try { const p = await window.vb.listProjects(); out.projectCount = p.length; out.firstProject = p[0] && p[0].name; } catch (e) { out.projectsErr = String(e); }
-        try { const s = await window.vb.getSettings(); out.videoModel = s.videoModel; } catch (e) { out.settingsErr = String(e); }
+        try { const s = await window.vb.getSettings(); out.localVideoModel = s.localVideoModel; } catch (e) { out.settingsErr = String(e); }
         return out;
       })()`);
-      const ok = r.hasBridge && r.rendered && r.createForm && r.tabs && r.keys && r.videoModel && !r.projectsErr;
+      const ok = r.hasBridge && r.rendered && r.createForm && r.tabs && r.caps && r.localVideoModel && !r.projectsErr;
       console.log('SMOKE: ' + JSON.stringify({ ok, ...r }));
       app.exit(ok ? 0 : 1);
     } catch (e) {
@@ -63,9 +62,9 @@ function runSmokeTest() {
   });
 }
 
-// The combined BYOK environment for every sidecar call: decrypted keys + model settings.
+// The environment for every engine op: the on-device model settings (no secrets — everything runs locally).
 function sidecarEnv(): Record<string, string> {
-  return { ...keysEnv(), ...settingsEnv() };
+  return { ...settingsEnv() };
 }
 
 // Run a streaming engine op: forward each event to the renderer on `sidecar:<opId>`, resolve on result.
@@ -183,8 +182,6 @@ function registerIpc() {
   });
 
   // ── config ──
-  ipcMain.handle('keys:status', () => keyStatus());
-  ipcMain.handle('keys:set', (_e, name: string, value: string) => { setKey(name, value); return keyStatus(); });
   ipcMain.handle('settings:get', () => getSettings());
   ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => setSettings(patch));
 
@@ -262,6 +259,9 @@ app.whenReady().then(async () => {
     }
     return;
   }
+  // One-time cleanup: this local-only build has no API keys — remove any encrypted key blob left by the
+  // old bring-your-own-key cloud build so no secret lingers on disk.
+  try { fs.rmSync(path.join(app.getPath('userData'), 'keys.json'), { force: true }); } catch { /* nothing to clean */ }
   if (process.platform === 'darwin' && app.dock && fs.existsSync(ICON)) app.dock.setIcon(ICON);   // dock icon in dev
   registerIpc();
   createWindow();

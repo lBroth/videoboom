@@ -15,8 +15,6 @@ export interface VBApi {
   deleteCharacter(cid: string): Promise<boolean>;
   openExternal(url: string): Promise<void>;
   // config
-  keysStatus(): Promise<Record<string, boolean>>;
-  setKey(name: string, value: string): Promise<Record<string, boolean>>;
   getSettings(): Promise<any>;
   setSettings(patch: any): Promise<any>;
   // native pickers
@@ -53,8 +51,6 @@ const api: VBApi = {
   deleteCharacter: (cid) => ipcRenderer.invoke('character:delete', cid),
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
 
-  keysStatus: () => ipcRenderer.invoke('keys:status'),
-  setKey: (name, value) => ipcRenderer.invoke('keys:set', name, value),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   setSettings: (patch) => ipcRenderer.invoke('settings:set', patch),
 

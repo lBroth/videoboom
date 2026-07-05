@@ -44,8 +44,6 @@ export interface VBApi {
   downloadVideo(pid: string): Promise<string | null>;
   deleteCharacter(cid: string): Promise<boolean>;
   openExternal(url: string): Promise<void>;
-  keysStatus(): Promise<Record<string, boolean>>;
-  setKey(name: string, value: string): Promise<Record<string, boolean>>;
   getSettings(): Promise<Settings>;
   setSettings(patch: Partial<Settings>): Promise<Settings>;
   pickAudio(): Promise<string | null>;
