@@ -10,6 +10,9 @@
   "private": true,
   "main": "dist/main/index.js",
   "type": "commonjs",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "build:main": "esbuild src/main/index.ts src/preload/index.ts --bundle --platform=node --format=cjs --external:electron --external:ffmpeg-static --external:ffprobe-static --outdir=dist --out-extension:.js=.js --outbase=src",
     "build:renderer": "vite build",
@@ -21,7 +24,7 @@
     "dist": "npm run build && electron-builder --publish never",
     "local:setup": "bash local/setup.sh",
     "typecheck": "tsc --noEmit",
-    "test:unit": "tsx --test test/*.test.ts",
+    "test:unit": "tsx --test \"test/*.test.ts\"",
     "check:no-cloud": "bash scripts/check-no-cloud.sh",
     "test": "npm run typecheck && npm run test:unit && npm run check:no-cloud"
   },
