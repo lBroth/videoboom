@@ -16,6 +16,7 @@ import type {
   Stage, Backend, StageSelection, CloudModels, ResolvedStage,
 } from './vb';
 import logo from './logo.png';
+import { Onboarding } from './Onboarding';
 
 const vb = window.vb;
 
@@ -108,6 +109,13 @@ const TABS: { key: TabKey; label: string; icon: typeof Sparkles }[] = [
 
 export default function App() {
   const [tab, setTab] = useState<TabKey>('create');
+  const settings = useQuery({ queryKey: ['settings'], queryFn: () => vb.getSettings() });
+  const qc = useQueryClient();
+
+  // First run (or a migrated blob that never onboarded): show the wizard until it's completed/skipped.
+  if (settings.data && !settings.data.onboarded) {
+    return <Onboarding onFinish={() => qc.invalidateQueries({ queryKey: ['settings'] })} />;
+  }
 
   return (
     <RenderProvider>

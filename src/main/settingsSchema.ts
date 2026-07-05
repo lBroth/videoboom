@@ -27,6 +27,7 @@ export interface Settings {
   localVideoModel: '5b' | '14b'; // Fast = FastWan-5B (DMD 3-step) / Quality = Wan 14B (default)
   localQuality: 'fast' | 'hd';   // within-model speed knob (14B: fast = Lightning 4-step, hd = full-step)
   localWanDir: string;      // VB_LOCAL_WAN_DIR — '' = read local/.model-path
+  onboarded: boolean;       // first-run wizard completed/skipped
 }
 
 export const DEFAULTS: Settings = {
@@ -39,6 +40,7 @@ export const DEFAULTS: Settings = {
     vlmModel: 'google/gemma-3-12b-it', moderationModel: 'google/gemini-3.5-flash',
   },
   sttLang: '', workers: 4, localVideoModel: '14b', localQuality: 'fast', localWanDir: '',
+  onboarded: false,
 };
 
 /** Coerce any stored blob into the v3 schema. Handles v2 (local-only, current), v1 (pre-pivot flat cloud),
@@ -78,5 +80,6 @@ export function migrate(raw: any): Settings {
     localVideoModel: raw?.localVideoModel === '5b' ? '5b' : '14b',   // 'ltx' legacy → '14b'
     localQuality: raw?.localQuality === 'hd' ? 'hd' : 'fast',
     localWanDir: str(raw?.localWanDir, ''),
+    onboarded: raw?.onboarded === true,
   };
 }

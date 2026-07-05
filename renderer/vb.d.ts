@@ -34,6 +34,7 @@ export interface Settings {
   // ── on-device knobs. Fast = FastWan-5B (DMD 3-step), Quality = Wan 14B (bf16-relay); both finish 1080p.
   sttLang: string; workers: number;
   localVideoModel: '5b' | '14b'; localQuality: 'fast' | 'hd'; localWanDir: string;
+  onboarded: boolean;                                         // first-run wizard completed/skipped
 }
 export interface LocalCapabilities {
   platform: string; arch: string; ramGB: number; isAppleSilicon: boolean;

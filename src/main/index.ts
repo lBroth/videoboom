@@ -49,8 +49,9 @@ function runSmokeTest() {
         const body = document.body.innerText || '';
         const out = { hasBridge: typeof window.vb === 'object' && !!window.vb };
         out.rendered = body.includes('Videoboom');
-        out.createForm = body.includes('Generate video') || body.includes('Choose a song');
-        out.tabs = ['Create','Videos','Cast','Settings'].every(t => body.includes(t));
+        out.onboarding = body.includes('stay local');   // first-run wizard (un-onboarded profile) also = booted OK
+        out.createForm = out.onboarding || body.includes('Generate video') || body.includes('Choose a song');
+        out.tabs = out.onboarding || ['Create','Videos','Cast','Settings'].every(t => body.includes(t));
         try { out.caps = await window.vb.localCapabilities(); } catch (e) { out.capsErr = String(e); }
         try { const p = await window.vb.listProjects(); out.projectCount = p.length; out.firstProject = p[0] && p[0].name; } catch (e) { out.projectsErr = String(e); }
         try { const s = await window.vb.getSettings(); out.localVideoModel = s.localVideoModel; } catch (e) { out.settingsErr = String(e); }
