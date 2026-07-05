@@ -1,51 +1,55 @@
 # Roadmap
 
-> Videoboom is now an **open-source, bring-your-own-key desktop app**. It went local-first (Phase 0) →
-> AWS serverless SaaS (coins/Cognito/DynamoDB) → back to a desktop app, this time open-source + BYOK.
-> The SaaS code was deleted (recoverable from git history).
+> Videoboom is an **open-source, local-only desktop app** — a song becomes a music video entirely on the
+> user's own Apple Silicon Mac (an MLX Python sidecar): no accounts, no keys, no cloud. History: local-first
+> prototype → AWS serverless SaaS (coins/Cognito/DynamoDB) → bring-your-own-key cloud desktop
+> (OpenRouter/Replicate) → today's local-only build; every earlier stage was deleted (recoverable from git
+> history).
 
 ## Done
 - **Desktop app**: Electron shell (`src/main`, `src/preload`, `renderer/`) + an in-process TypeScript
-  render engine (`src/engine/`), keys stored encrypted via the OS keychain, no server, no Python.
-- **Render pipeline**: story from the actual lyrics → shot list → identity-preserving keyframes →
-  per-scene video (Kling, first+last-frame) → beat-cut assemble, with tolerant failure handling.
-- **Vocal-aligned editing**: forced alignment (Replicate) + frame-grid retiming; a vocal scene snaps to
-  its first sung word.
+  render engine (`src/engine/`); no accounts, no server, no keys.
+- **On-device stack**: every stage runs locally through the MLX sidecar — STT (mlx-whisper), story/shot-list
+  LLM (mlx-lm), keyframes (mflux FLUX + Kontext), image-to-video (mlx-video Wan 2.2), portrait caption +
+  safety (mlx-vlm). Zero per-render cost, fully offline, nothing leaves the machine.
+- **Render pipeline**: story from the actual lyrics → shot list → identity-preserving keyframes → per-scene
+  video (on-device Wan 2.2, single start frame chained into one continuous shot) → beat-cut assemble, with
+  tolerant failure handling.
+- **Vocal-aligned editing**: on-device forced alignment (mlx-whisper) + frame-grid retiming; a vocal scene
+  snaps to its first sung word.
 - **Cast**: reusable characters from a photo and/or prompt; multi-subject scenes.
 - **Per-scene refresh**, **preview-then-resume**, AI-tagged output metadata.
-- **BYOK + at-cost**: user pastes their own OpenRouter / Replicate keys; the app shows real provider
-  cost with no markup.
-- **Packaging**: `npm run dist` → native installers (Windows NSIS + portable, macOS dmg, Linux
-  AppImage + deb); ffmpeg bundled (`ffmpeg-static`) so end users need no toolchain.
-- **Sidecar removed**: ported the Python render engine to TypeScript (in-process, async) — one runtime,
-  no PyInstaller, simpler cross-OS builds.
-- **CI/CD**: GitHub Actions — typecheck + unit tests + build and headless engine/smoke tests on all
-  three OSes; on a `v*` tag a matrix build publishes the installers to GitHub Releases (v0.1.0 shipped).
+- **Engine in TS, models in a sidecar**: the render/orchestration engine is in-process TypeScript (async,
+  never blocks the main process); heavy model inference runs in a resident Python MLX sidecar
+  (`local/server.py`), reached over localhost HTTP.
+- **Packaging**: `npm run dist` → `electron-builder` (macOS dmg is the shipped target; the config still
+  carries the Windows/Linux targets that wait on the CUDA backend); ffmpeg bundled (`ffmpeg-static`) so end
+  users need no toolchain.
+- **CI/CD**: GitHub Actions — typecheck + unit tests + build and headless engine/smoke tests on all three
+  OSes; on a `v*` tag a matrix build publishes the installers to GitHub Releases (v0.1.0 shipped).
 
-## Next — local / on-device models (the BYOK idea, all the way)
-Let the user run models on their **own hardware** instead of paying a cloud provider — zero per-render
-cost, fully offline, maximum privacy. The engine is already provider-abstracted (every stage is a model
-+ endpoint), so this is mostly wiring + Settings, staged easiest-first:
-- **LLM (story + shot list)** — point at any **OpenAI-compatible local server** (Ollama / LM Studio /
-  llama.cpp) via a custom base URL + model in Settings. Smallest lift: the engine already speaks the
-  OpenAI chat schema; just make the base URL configurable per stage.
-- **Transcription** — local **whisper.cpp / WhisperX** instead of Replicate (word timings on-device).
-- **Keyframes** — local image generation (**ComfyUI / Stable Diffusion**) behind the same `cloudKeyframe`
-  seam.
-- **Video (i2v)** — local open models (**Wan / SVD**) via ComfyUI; heaviest, needs a capable GPU / Apple
-  Silicon, so it lands last.
-- Keep it **opt-in and mix-and-match**: e.g. local LLM + cloud video, chosen per stage in Settings.
+## Next — local-only hardening (`LOCAL_PLAN.md`)
+Running every stage on the user's own hardware is no longer a future idea — it's the **shipped**
+architecture (see the Done list and `docs/MODELS.md` / `docs/LOCAL-MODELS.md`). What's left is hardening it,
+and the detailed roadmap lives in [`LOCAL_PLAN.md`](../LOCAL_PLAN.md) — not duplicated here. Milestones:
+- **M0** reconciliation groundwork + CI guard scripts.
+- **M1** finish cutting the last cloud code (ordered commits C1–C6).
+- **M2** sidecar contract v2 + MLX handler refactor.
+- **M3** bootstrap + a **CUDA backend** (Windows / Linux, NVIDIA) so the app isn't Apple-only.
+- **M4** model catalog + downloader + Model Manager UI.
+- **M5** hardware detection / tiers / setup wizard / auto-config + a real-time ETA estimator.
+- **M6** lockdown + cross-platform packaging.
 
 ## TODO — local i2v model options (researched 2026)
-Keep **Wan 2.2 I2V-A14B (MLX 4-bit) + Wan2.2-Lightning** as the default — it's still the open leader
-for cinematic i2v with realistic people at 480–720p, and fits 48GB. Two additions worth doing:
-- **Draft/preview tier — distilled LTX-2 / LTX-Video** (mlx-video / dgrauet/ltx-2-mlx). Fast few-step rough
-  cuts and the only one with **native synced audio**. NB: LTX-2.3 (22B) is **not** lighter/faster than
-  Wan-14B on Mac (the "fast LTX" reputation is its CUDA distilled pipeline) — only add the *distilled* path.
+Shipped today: **Quality = Wan 2.2 I2V-A14B bf16-relay + Wan2.2-Lightning** (the open leader for cinematic
+i2v with realistic people, fits 48GB via relay-shedding) and **Fast = FastWan-5B (DMD 3-step)** as the
+draft/preview tier. LTX was tried and removed (LTX-2.3 22B is not lighter/faster than Wan-14B on Mac — the
+"fast LTX" reputation is its CUDA distilled pipeline). Remaining ideas:
 - **Watchlist — HunyuanVideo-1.5** (8.3B, Apache-2.0): lightest of the strong models, best motion/physics;
   add once a mature **native MLX** runner ships (only an MPS port of the original Hunyuan exists today).
-- Not worth it on Mac: CogVideoX / Mochi / SVD / Wan2.2-Animate (obsolete or CUDA-only). "Vidu Q1" (the
-  "vubeq" someone mentioned) is closed cloud-only — ignore.
+- Not worth it on Mac: CogVideoX / Mochi / SVD / Wan2.2-Animate (obsolete or CUDA-only).
+- The full cross-platform model/quant/tier plan (incl. CUDA backend and a model catalog) lives in
+  `LOCAL_PLAN.md` (M0–M6).
 
 ## TODO — format presets (music video / ad-spot / …) instead of free-text style
 Let the Create screen pick a **preconfigured format preset** rather than only typing a free style. Each
@@ -69,25 +73,10 @@ scene-regenerate while one is active, returning a clear error — no new job is 
 - If one is somehow triggered anyway, surface the backend's "a render is already in progress" error in the
   UI instead of silently doing nothing.
 
-## TODO — estimated cost / minute in Settings
-Show a live **€/min of video** estimate in Settings, computed from the **active cloud models** per stage
-(local stages = €0, since they run on the user's own hardware).
-- Per-stage cost model (per 1 min of finished video):
-  - **Video i2v** (the dominant cost): ~60s of clips per minute × the provider's per-second rate
-    (e.g. Kling). Half-known already — `cost.ts` tracks real spend after a render; reuse those rates.
-  - **Keyframes**: ~(scenes per minute) × per-image price of the active image model.
-  - **LLM** (story + shot list): ~tokens per render × the model's input/output price (small).
-  - **STT**: per-song flat (Replicate WhisperX), amortised over the song length (small).
-  - **VLM / moderation**: per cast/upload, not per video minute → show separately or omit.
-- Sum the stages currently set to **cloud**; show "€0 (fully local)" when every stage is local.
-- Source rates from a small `pricing` table (cents per second / per image / per Mtoken) keyed by model
-  slug, with sensible defaults + an option to edit (prices drift). Recompute on any backend/model change.
-- It's an **estimate** — label it; the post-render `cost.ts` total is the real figure.
-
 ## Also next
-- **Settings polish**: per-stage model picker + a "test key" button.
-- **More i2v models**: expose cheaper / alternative image-to-video models cleanly (keep `genVideo()`
-  model-agnostic).
+- **Settings polish**: per-stage model picker (see `LOCAL_PLAN.md` M4/M5).
+- **More i2v models**: expose alternative on-device image-to-video models cleanly (keep the local i2v path
+  in `genVideoLocal()` model-agnostic).
 - **Landing page**: GitHub Pages site (built; goes live once the repo is public).
 
 ## Parked / later
