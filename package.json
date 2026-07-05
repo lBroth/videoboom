@@ -21,7 +21,8 @@
     "dev:renderer": "vite",
     "start": "electron .",
     "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:main\" \"wait-on tcp:5273 && electron .\"",
-    "dist": "npm run build && electron-builder --publish never",
+    "vendor:runtime": "bash scripts/vendor-runtime.sh",
+    "dist": "npm run vendor:runtime && npm run build && electron-builder --publish never",
     "local:setup": "bash local/setup.sh",
     "typecheck": "tsc --noEmit",
     "test:unit": "tsx --test \"test/*.test.ts\"",
@@ -62,6 +63,12 @@
     "icon": "icons/icon.png",
     "files": ["dist/**/*", "renderer-dist/**/*", "icons/icon.png"],
     "asarUnpack": ["node_modules/ffmpeg-static/**", "node_modules/ffprobe-static/**"],
+    "extraResources": [
+      { "from": "local", "to": "local", "filter": ["*.py", "requirements.txt", "!bench*.py", "!smoke_*.py", "models/rife-v4.26/**", "models/taew2_1.safetensors"] },
+      { "from": "build/bin/uv", "to": "bin/uv" },
+      { "from": "build/wheels", "to": "wheels" },
+      { "from": "local/requirements.macos.lock", "to": "requirements.macos.lock" }
+    ],
     "afterSign": "scripts/mac-sign.js",
     "afterAllArtifactBuild": "scripts/notarize-dmg.js",
     "mac": {

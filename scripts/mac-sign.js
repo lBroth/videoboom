@@ -19,7 +19,18 @@ exports.default = async function macSign(context) {
   const appPath = path.join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`);
   const { APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID } = process.env;
 
+  // uv ships as a Mach-O in extraResources (Contents/Resources/bin/uv). electron-builder does NOT auto-sign
+  // extraResources, so notarization would reject it unsigned — sign it (hardened runtime) under our Developer
+  // ID before submitting. (The Python that uv later provisions into userData stays ad-hoc/non-LV — bootstrap's
+  // per-Mach-O re-sign handles that; only OUR tool needs the hardened Developer-ID signature.)
+  const fs = require('node:fs');
+  const uvPath = path.join(appPath, 'Contents', 'Resources', 'bin', 'uv');
+
   if (APPLE_ID && APPLE_APP_SPECIFIC_PASSWORD && APPLE_TEAM_ID) {
+    if (fs.existsSync(uvPath)) {
+      console.log('  • signing bundled uv (hardened runtime)…');
+      execFileSync('codesign', ['--force', '--options', 'runtime', '--timestamp', '--sign', process.env.CSC_NAME || 'Developer ID Application', uvPath], { stdio: 'inherit' });
+    }
     console.log(`  • notarizing ${appPath} (Apple Developer ID)…`);
     const { notarize } = require('@electron/notarize');
     await notarize({ appPath, appleId: APPLE_ID, appleIdPassword: APPLE_APP_SPECIFIC_PASSWORD, teamId: APPLE_TEAM_ID });
