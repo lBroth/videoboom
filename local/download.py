@@ -35,8 +35,9 @@ OPTIONAL_REPOS = {
 VIDEO_ENGINES = {
     # Fast: FastWan-5B DMD 3-step (published self-contained, ~24GB, fits 32GB unified).
     "5b": {"repo": "lBroth/FastWan2.2-TI2V-5B-MLX", "name": "FastWan2.2-TI2V-5B-MLX", "marker": ".model-path-5b", "lightning": False},
-    # Quality: Wan-14B MLX Q8 (~43GB, needs 48GB+). Load-test through mlx-video before default (see plan §10).
-    "14b": {"repo": "Anes1032/Wan2.2-I2V-A14B-mlx-q8", "name": "Wan2.2-I2V-A14B-MLX-Q8", "marker": ".model-path", "lightning": True},
+    # Quality: our own Wan-14B MLX bf16 (~64GB) — relay-shedding loads ONE expert at a time (peak ~32.6GB,
+    # fits 48GB), which quantized repos that keep both experts resident (Q4 peaked 67.7GB) do not.
+    "14b": {"repo": "lBroth/Wan2.2-I2V-A14B-MLX-bf16", "name": "Wan2.2-I2V-A14B-MLX-bf16", "marker": ".model-path", "lightning": True},
 }
 
 

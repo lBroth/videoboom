@@ -71,7 +71,7 @@ generation needs one of:
 
 | GPU | Minimum | Status |
 |-----|---------|--------|
-| **Apple Silicon — MLX / Metal** | M-series Mac · **32 GB+ unified memory** (48 GB recommended — the Wan video model peaks ~24 GB) | ✅ shipping |
+| **Apple Silicon — MLX / Metal** | M-series Mac · **48 GB+ unified memory** (64 GB recommended — measured on-device peaks: Wan-14B bf16-relay ~33 GB, FastWan-5B ~55 GB) | ✅ shipping |
 | **NVIDIA — CUDA** | driver ≥ 570 · **8 GB+ VRAM** · compute capability ≥ 8.6 · Windows / Linux | 🚧 on the roadmap |
 
 Plus **~50 GB free disk** for the model weights (downloaded once). The app detects your machine, picks the

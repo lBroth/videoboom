@@ -496,7 +496,7 @@ per-engine marker write.
 | Engine | Repo | Size | Marker | Fits 32 GB? |
 |---|---|---|---|---|
 | `5b` Fast (target default) | `lBroth/FastWan2.2-TI2V-5B-MLX` | ~24 GB | `.model-path-5b` | **yes** |
-| `14b` Quality (interim default) | `Anes1032/Wan2.2-I2V-A14B-mlx-q8` | ~43 GB | `.model-path` | no (needs 48 GB+) |
+| `14b` Quality (opt-in) | `lBroth/Wan2.2-I2V-A14B-MLX-bf16` (**our own**, published 2026-07-06) | ~64 GB | `.model-path` | fits 48 GB via relay-shedding (peak 32.6 GB — one expert at a time; Q4/Q8 keep both resident and peak 67.7 GB) |
 
 **Recommended (mandatory) set — the keyless render prerequisites.**
 `RENDER_STAGES` (`index.ts:142-147`) is STT + LLM + KEYFRAME + VIDEO (VLM is
@@ -755,7 +755,7 @@ M3g–M3j build the bootstrap and packaging. M3h and M3m are the two commits tha
   Superseded original text: **Decision needed:** create/authorize the org and upload, or
   ship the 14B-only interim indefinitely.
 
-- **D2 — 14B model default (Q4 vs bf16 vs Q8).** The current HEAD engine default
+- **D2 — RESOLVED 2026-07-06.** Quality 14B ships as **our own `lBroth/Wan2.2-I2V-A14B-MLX-bf16`** (published) — the only variant that fits 48 GB, because relay-shedding (bf16-only) loads one expert at a time (peak 32.6 GB) whereas Q4/Q8 keep both experts resident (Q4 peaked 67.7 GB). RAM floor raised to **48 GB** (MIN_RAM_GB), 64 GB recommended. Default stays **FastWan-5B** (Fast, ~24 GB, fits 48 GB at the default 57f). Superseded original text: The current HEAD engine default
   is **14B bf16 via relay-shedding** (`.model-path` → `Wan2.2-I2V-A14B-MLX-bf16`,
   ~54 GB, `_wants_relay()` sheds one expert to fit 48 GB). No community bf16 MLX
   exists, so bf16 would need a `videoboom` re-host and does **not** fit the app's

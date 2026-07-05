@@ -674,7 +674,7 @@ function HardwareCard({ settings, caps, patch }: {
       </div>
       {!caps.supported ? (
         <div className="rounded-xl bg-amber-500/10 border border-amber-500/20 px-3 py-2.5 text-sm text-amber-200/90">
-          On-device video needs an <b>Apple-Silicon Mac with 32 GB+</b>. This machine can make videos via Cloud — add an OpenRouter key below (and a Replicate key for lyric timing).
+          On-device video needs an <b>Apple-Silicon Mac with {caps.minRamGB} GB+</b>. This machine can make videos via Cloud — add an OpenRouter key below (and a Replicate key for lyric timing).
         </div>
       ) : !caps.depsInstalled ? (
         <div className="rounded-xl bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-xs text-amber-200/90">

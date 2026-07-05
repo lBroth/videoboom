@@ -47,8 +47,10 @@ function videoReady(): boolean {
   }
 }
 
-const MIN_RAM_GB = 32; // biggest single stage (Wan i2v ~24GB) + macOS/app overhead
-const RECOMMENDED_RAM_GB = 48;
+// Measured on-device peaks (M5 Pro bench, 2026-07-05): bf16-relay 32.6GB, FastWan-5b 54.8GB@121f, Q4 67.7GB.
+// The realistic floor is 48GB (bf16-relay fits; 32GB swaps/OOMs). 64GB recommended for headroom / larger clips.
+const MIN_RAM_GB = 48;
+const RECOMMENDED_RAM_GB = 64;
 
 // The ONE place the required-hardware spec is written — reused by every "this machine can't run it" message.
 export const HARDWARE_SPEC = `an Apple Silicon Mac (M-series) with ${MIN_RAM_GB}GB+ unified memory (${RECOMMENDED_RAM_GB}GB recommended)`;
