@@ -17,6 +17,7 @@ export interface VBApi {
   // config
   getSettings(): Promise<any>;
   setSettings(patch: any): Promise<any>;
+  resolvedBackends(): Promise<Record<string, { backend: 'cloud' | 'local'; reason: string; localAvailable: boolean }>>;
   keysStatus(): Promise<Record<string, boolean>>;
   setKey(name: string, value: string): Promise<Record<string, boolean>>;
   // native pickers
@@ -55,6 +56,7 @@ const api: VBApi = {
 
   getSettings: () => ipcRenderer.invoke('settings:get'),
   setSettings: (patch) => ipcRenderer.invoke('settings:set', patch),
+  resolvedBackends: () => ipcRenderer.invoke('settings:resolved'),
   keysStatus: () => ipcRenderer.invoke('keys:status'),
   setKey: (name, value) => ipcRenderer.invoke('keys:set', name, value),
 

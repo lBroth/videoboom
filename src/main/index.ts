@@ -259,6 +259,9 @@ function registerIpc() {
   // ── config ──
   ipcMain.handle('settings:get', () => getSettings());
   ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => { const s = setSettings(patch); refreshFirewall(); return s; });
+  // The resolver's per-stage decision ({backend,reason,localAvailable}) for the current settings + keys +
+  // hardware. The renderer renders this (it never re-implements the resolver); re-query on any settings/key change.
+  ipcMain.handle('settings:resolved', () => resolvedConfig().stages);
 
   // ── optional cloud keys (safeStorage; the app works fully with none) ──
   ipcMain.handle('keys:status', () => keyStatus());

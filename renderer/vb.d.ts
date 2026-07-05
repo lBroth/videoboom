@@ -23,6 +23,9 @@ export interface CloudModels {
   storyModel: string; llmModel: string; keyframeModel: string;
   videoModel: string; vlmModel: string; moderationModel: string;
 }
+// The resolver's decision for one stage (from settings:resolved). The renderer renders this — it never
+// re-implements the resolver. `reason` is 'no-key' | 'pinned' | 'preference' | 'default'.
+export interface ResolvedStage { backend: Backend; reason: string; localAvailable: boolean; }
 export interface Settings {
   settingsVersion: number;                                     // 3
   backendPreference: 'auto' | 'prefer-local' | 'prefer-cloud'; // master control
@@ -55,6 +58,7 @@ export interface VBApi {
   openExternal(url: string): Promise<void>;
   getSettings(): Promise<Settings>;
   setSettings(patch: Partial<Settings>): Promise<Settings>;
+  resolvedBackends(): Promise<Record<Stage, ResolvedStage>>;
   keysStatus(): Promise<Record<string, boolean>>;
   setKey(name: string, value: string): Promise<Record<string, boolean>>;
   pickAudio(): Promise<string | null>;

@@ -5,12 +5,16 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Sparkles, Film, UserRound, Settings as SettingsIcon, Music, Plus, RotateCcw, Trash2,
   Image as ImageIcon, Wand2, AlertTriangle, CheckCircle2, Download,
+  Lock, Shield, Cloud, Cpu, KeyRound, ExternalLink, type LucideIcon,
 } from 'lucide-react';
 import {
   Button, IconButton, Card, Field, Segmented, ProgressBar, Spinner, StatusDot, EmptyState,
   Img, inputCls, cx, useConfirm,
 } from './components/ui';
-import type { Project, Character, Scene, Settings, SidecarEvent } from './vb';
+import type {
+  Project, Character, Scene, Settings, SidecarEvent, LocalCapabilities,
+  Stage, Backend, StageSelection, CloudModels, ResolvedStage,
+} from './vb';
 import logo from './logo.png';
 
 const vb = window.vb;
@@ -28,7 +32,7 @@ function useMedia(key?: string | null, bust?: unknown): string | null {
 }
 
 // ── live render runs (one per project; driven by the sidecar event stream) ──
-interface RunState { active: boolean; label: string; stage?: string; total?: number; done: number; finished?: boolean; error?: string }
+interface RunState { active: boolean; label: string; stage?: string; total?: number; done: number; finished?: boolean; cost?: number; error?: string }
 const RenderCtx = createContext<{
   runs: Record<string, RunState>;
   startRender: (pid: string, preview: boolean) => void;
@@ -50,7 +54,7 @@ function RenderProvider({ children }: { children: ReactNode }) {
         const next: RunState = { ...cur };
         if (e.event === 'stage') { next.stage = e.stage; if (e.total != null) next.total = e.total; if (e.stage === 'clips') next.done = 0; }
         else if (e.event === 'scene') next.done = (cur.done || 0) + 1;
-        else if (e.event === 'done') next.finished = true;
+        else if (e.event === 'done') { next.finished = true; if (e.costCents != null) next.cost = e.costCents; }
         else if (e.event === 'error') next.error = e.message;
         return { ...r, [pid]: next };
       });
@@ -304,7 +308,12 @@ function VideoCard({ p }: { p: Project }) {
         </div>
         {active && <ProgressBar progress={p.progress || 0.05} message={runMessage(run)} />}
         {p.error && !active && <ErrorNote>{p.error}</ErrorNote>}
-        {run?.finished && !active && <div className="text-xs text-slate-400 flex items-center gap-1.5"><CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />Finished{p.scenesFailed ? ` · ${p.scenesFailed} scene(s) failed` : ''}</div>}
+        {run?.finished && !active && (
+          <div className="text-xs text-slate-400 flex items-center gap-2 flex-wrap">
+            <span className="flex items-center gap-1.5"><CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />Finished{p.scenesFailed ? ` · ${p.scenesFailed} scene(s) failed` : ''}</span>
+            {run.cost != null && run.cost > 0 && <CostPill cents={run.cost} />}
+          </div>
+        )}
         {!active && (
           <div className="flex flex-wrap gap-2">
             {canResume && <Button size="sm" variant="primary" icon={Plus} onClick={() => startResume(p.id)}>Finish full song</Button>}
@@ -436,59 +445,35 @@ function CharCard({ c }: { c: Character }) {
   );
 }
 
-// ── Settings ──
-// Every generation stage runs on-device. The card lists each stage's model with its size and a Download
-// button when the weights aren't on disk yet; video has a Fast/Quality choice (the model + speed).
-const DL_STAGES: { stage: string; label: string; model: string; size: string }[] = [
-  { stage: 'VIDEO', label: 'Video (image→video)', model: 'Wan 2.2 · mlx-video', size: '~54 GB' },
-  { stage: 'KEYFRAME', label: 'Keyframe images', model: 'FLUX · mflux', size: '~15 GB' },
-  { stage: 'LLM', label: 'Story & shot-list', model: 'Qwen3 · mlx-lm', size: '~19 GB' },
-  { stage: 'VLM', label: 'Face caption + safety', model: 'gemma-3 · mlx-vlm', size: '~8 GB' },
-  { stage: 'STT', label: 'Lyric timing', model: 'whisper · mlx', size: '~1.6 GB' },
+// ── Settings (hybrid: local-default, opt into cloud per stage) ──
+// The renderer NEVER decides a backend — it renders resolvedBackends() (settings:resolved IPC). Everything is
+// local until a key is saved AND a stage is opted into cloud. See DUAL_BACKEND_PLAN.md §7.
+
+const PROVIDER_LABEL: Record<'openrouter' | 'replicate', string> = { openrouter: 'OpenRouter', replicate: 'Replicate' };
+
+// The five render stages (order per §7). `provider` is the key that gates Cloud (STT = Replicate; rest =
+// OpenRouter). `model`/`size` drive the on-device download affordance shown when a stage resolves local.
+const STAGE_ROWS: { id: Stage; label: string; provider: 'openrouter' | 'replicate'; model: string; size: string }[] = [
+  { id: 'STT', label: 'Lyric timing', provider: 'replicate', model: 'whisper · mlx', size: '~1.6 GB' },
+  { id: 'LLM', label: 'Story & shot-list', provider: 'openrouter', model: 'Qwen3 · mlx-lm', size: '~19 GB' },
+  { id: 'VLM', label: 'Face caption + safety', provider: 'openrouter', model: 'gemma-3 · mlx-vlm', size: '~8 GB' },
+  { id: 'KEYFRAME', label: 'Keyframe images', provider: 'openrouter', model: 'FLUX · mflux', size: '~15 GB' },
+  { id: 'VIDEO', label: 'Video (image→video)', provider: 'openrouter', model: 'Wan 2.2 · mlx-video', size: '~54 GB' },
 ];
 
-// One stage: "Installed" when the weights are on disk, else a Download button with live % progress.
-function StageDownloadRow({ st }: { st: (typeof DL_STAGES)[number] }) {
-  const qc = useQueryClient();
-  const status = useQuery({ queryKey: ['modelStatus'], queryFn: () => vb.modelsStatus() });
-  const [dl, setDl] = useState<{ pct: number } | null>(null);
-  const [err, setErr] = useState('');
-  const ready = status.data?.[st.stage] === 'ready';
+const KEY_FIELDS: { name: 'openrouter' | 'replicate'; label: string; hint: string; url: string }[] = [
+  { name: 'openrouter', label: 'OpenRouter', hint: 'unlocks cloud LLM, images & video.', url: 'https://openrouter.ai/keys' },
+  { name: 'replicate', label: 'Replicate', hint: 'unlocks cloud lyric timing (WhisperX).', url: 'https://replicate.com/account/api-tokens' },
+];
 
-  const startDownload = () => {
-    setErr('');
-    setDl({ pct: 0 });
-    const off = vb.onDownload(st.stage, (e) => {
-      if (e.event === 'progress') setDl({ pct: e.pct ?? 0 });
-      else if (e.event === 'error') { setErr(e.error || 'download failed'); setDl(null); off(); }
-      else if (e.event === 'done' || e.event === 'closed') { setDl(null); off(); qc.invalidateQueries({ queryKey: ['modelStatus'] }); }
-    });
-    vb.downloadModel(st.stage).catch((e) => { setErr(String(e?.message || e)); setDl(null); off(); });
-  };
-
-  return (
-    <div className="flex items-center gap-3 py-1.5">
-      <div className="flex-1 min-w-0">
-        <div className="text-sm text-slate-200 truncate">{st.label}</div>
-        <div className="text-xs text-slate-500">{st.model} · {st.size}</div>
-      </div>
-      {ready ? (
-        <span className="text-xs text-emerald-400 inline-flex items-center gap-1 shrink-0"><CheckCircle2 className="w-3.5 h-3.5" />Installed</span>
-      ) : dl ? (
-        <div className="flex items-center gap-2 w-44 shrink-0">
-          <div className="flex-1 h-1.5 rounded-full bg-white/10 overflow-hidden"><div className="h-full bg-violet-400 transition-all" style={{ width: `${dl.pct}%` }} /></div>
-          <span className="text-xs text-slate-400 tabular-nums w-8 text-right">{dl.pct.toFixed(0)}%</span>
-          <button onClick={() => vb.cancelDownload(st.stage)} className="text-xs text-slate-500 hover:text-slate-300">cancel</button>
-        </div>
-      ) : (
-        <button onClick={startDownload} className="text-xs inline-flex items-center gap-1.5 rounded-lg border border-violet-400/40 bg-violet-500/10 px-2.5 py-1 text-violet-200 hover:bg-violet-500/20 shrink-0">
-          <Download className="w-3.5 h-3.5" /> Download
-        </button>
-      )}
-      {err && <div className="text-xs text-red-300 shrink-0">{err}</div>}
-    </div>
-  );
-}
+const MODEL_FIELDS: { key: keyof CloudModels; label: string }[] = [
+  { key: 'storyModel', label: 'Story model' },
+  { key: 'llmModel', label: 'Shot-list model' },
+  { key: 'keyframeModel', label: 'Keyframe model' },
+  { key: 'videoModel', label: 'Video model' },
+  { key: 'vlmModel', label: 'Caption (VLM) model' },
+  { key: 'moderationModel', label: 'Moderation model' },
+];
 
 // Fast/Quality IS the model choice: Fast = FastWan-5B (DMD 3-step draft), Quality = Wan 14B (bf16-relay).
 // Both finish at 1080p (the shot renders at 480p on-device, then interpolates + upscales).
@@ -497,61 +482,334 @@ const VIDEO_MODES: { key: '5b' | '14b'; title: string; sub: string }[] = [
   { key: '14b', title: 'Quality', sub: 'Wan 14B · best detail · slower' },
 ];
 
+// Cost estimate pill — cloud-only. An all-local render never emits costCents, so this is simply never shown.
+function CostPill({ cents }: { cents: number }) {
+  return (
+    <span title="Estimate — billed by your providers" className="inline-flex items-center gap-1 rounded-full bg-sky-500/10 border border-sky-400/25 px-2 py-0.5 text-xs text-sky-200">
+      {`≈ $${(cents / 100).toFixed(2)} · cloud stages`}
+    </span>
+  );
+}
+
+// Compact tri-state segmented control (Auto · Local · Cloud). A segment can be disabled (Cloud without a key)
+// — this is what makes local-default structural: Cloud is literally unclickable until the key step.
+function StageSegment({ options, value, onChange }: {
+  options: { key: string; label: string; icon?: LucideIcon; disabled?: boolean; title?: string }[];
+  value: string; onChange: (k: string) => void;
+}) {
+  return (
+    <div role="radiogroup" className="inline-flex rounded-xl border border-white/10 bg-white/[0.03] p-0.5 gap-0.5 shrink-0">
+      {options.map((o) => {
+        const active = value === o.key;
+        const Icon = o.icon;
+        return (
+          <button key={o.key} type="button" role="radio" aria-checked={active} disabled={o.disabled} title={o.title}
+            onClick={() => onChange(o.key)}
+            className={cx('inline-flex items-center gap-1 h-8 px-3 rounded-lg text-xs font-semibold transition-colors',
+              active ? 'bg-violet-500/20 text-violet-100 shadow-inner ring-1 ring-violet-400/50'
+                : 'text-slate-400 hover:text-slate-200',
+              o.disabled && 'opacity-40 cursor-not-allowed hover:text-slate-400')}>
+            {Icon && <Icon className="w-3 h-3" />}{o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// The resolver's verdict for a stage, rendered verbatim (never recomputed here). `auto` prefixes "Auto →".
+function ResolvedBadge({ rs, provLabel, auto }: { rs: ResolvedStage; provLabel: string; auto: boolean }) {
+  const local = rs.backend === 'local';
+  return (
+    <div className="flex items-center gap-1.5 text-xs">
+      {auto && <span className="text-slate-500">Auto →</span>}
+      <span className={cx('inline-flex items-center gap-1', local ? 'text-emerald-300/90' : 'text-sky-300/90')}>
+        {local ? <Shield className="w-3.5 h-3.5" /> : <Cloud className="w-3.5 h-3.5" />}
+        {local ? 'Local · private' : `Cloud · ${provLabel} · leaves this Mac`}
+      </span>
+    </div>
+  );
+}
+
+// On-device download affordance for a stage that resolved local (reuses the model-status query + download
+// stream). Renders nothing once the weights are on disk; a cloud-resolved stage never mounts this.
+function ModelDownload({ stage, model, size }: { stage: string; model: string; size: string }) {
+  const qc = useQueryClient();
+  const status = useQuery({ queryKey: ['modelStatus'], queryFn: () => vb.modelsStatus() });
+  const [dl, setDl] = useState<{ pct: number } | null>(null);
+  const [err, setErr] = useState('');
+  const ready = status.data?.[stage] === 'ready';
+
+  const startDownload = () => {
+    setErr('');
+    setDl({ pct: 0 });
+    const off = vb.onDownload(stage, (e) => {
+      if (e.event === 'progress') setDl({ pct: e.pct ?? 0 });
+      else if (e.event === 'error') { setErr(e.error || 'download failed'); setDl(null); off(); }
+      else if (e.event === 'done' || e.event === 'closed') { setDl(null); off(); qc.invalidateQueries({ queryKey: ['modelStatus'] }); }
+    });
+    vb.downloadModel(stage).catch((e) => { setErr(String(e?.message || e)); setDl(null); off(); });
+  };
+
+  if (ready) return null;   // installed — the Local badge already tells the story
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-xs text-slate-500">{model} · {size}</span>
+      {dl ? (
+        <div className="flex items-center gap-2 w-44">
+          <div className="flex-1 h-1.5 rounded-full bg-white/10 overflow-hidden"><div className="h-full bg-violet-400 transition-all" style={{ width: `${dl.pct}%` }} /></div>
+          <span className="text-xs text-slate-400 tabular-nums w-8 text-right">{dl.pct.toFixed(0)}%</span>
+          <button onClick={() => vb.cancelDownload(stage)} className="text-xs text-slate-500 hover:text-slate-300">cancel</button>
+        </div>
+      ) : (
+        <button onClick={startDownload} className="text-xs inline-flex items-center gap-1.5 rounded-lg border border-violet-400/40 bg-violet-500/10 px-2.5 py-1 text-violet-200 hover:bg-violet-500/20">
+          <Download className="w-3.5 h-3.5" /> Download
+        </button>
+      )}
+      {err && <span className="text-xs text-red-300">{err}</span>}
+    </div>
+  );
+}
+
+// Fast/Quality selector — shown inline on the VIDEO row only when it resolves local.
+function VideoQuality({ settings, patch }: { settings: Settings; patch: (p: Partial<Settings>) => void }) {
+  const mode: '5b' | '14b' = settings.localVideoModel === '5b' ? '5b' : '14b';
+  return (
+    <div className="grid grid-cols-2 gap-2 pt-1">
+      {VIDEO_MODES.map((v) => (
+        <button key={v.key} onClick={() => patch({ localVideoModel: v.key })}
+          className={cx('rounded-lg border px-3 py-2 text-left transition-colors',
+            mode === v.key ? 'border-violet-400/60 bg-violet-500/10 text-slate-100' : 'border-white/10 hover:bg-white/[0.03] text-slate-300')}>
+          <div className="text-sm font-medium">{v.title}</div><div className="text-xs text-slate-500">{v.sub}</div>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// One stage row: tri-state Auto·Local·Cloud (Cloud key-gated) + the resolver's resolved badge + a download
+// affordance / video-quality / cloud-video note, gated on how the stage actually resolved.
+function StageBackendRow({ row, settings, keys, resolved, patch }: {
+  row: (typeof STAGE_ROWS)[number];
+  settings: Settings; keys: Record<string, boolean>;
+  resolved?: Record<Stage, ResolvedStage>; patch: (p: Partial<Settings>) => void;
+}) {
+  const { id, label, provider, model, size } = row;
+  const sel = settings.stages[id];
+  const triValue = sel.mode === 'auto' ? 'auto' : (sel.backend === 'cloud' ? 'cloud' : 'local');
+  const rs = resolved?.[id];
+  const keyed = !!keys[provider];
+  const provLabel = PROVIDER_LABEL[provider];
+
+  const setStage = (v: string) => {
+    const next: StageSelection = v === 'auto' ? { mode: 'auto' } : { mode: 'manual', backend: v as Backend };
+    patch({ stages: { ...settings.stages, [id]: next } });
+  };
+
+  const options = [
+    { key: 'auto', label: 'Auto' },
+    { key: 'local', label: 'Local' },
+    { key: 'cloud', label: 'Cloud', icon: keyed ? undefined : Lock, disabled: !keyed, title: keyed ? undefined : `Add your ${provLabel} key below` },
+  ];
+
+  const localResolved = rs?.backend === 'local';
+  return (
+    <div className="py-3 border-t border-white/5 first:border-t-0 space-y-2">
+      <div className="flex items-center gap-3">
+        <div className="text-sm text-slate-200 flex-1 min-w-0">{label}</div>
+        <StageSegment options={options} value={triValue} onChange={setStage} />
+      </div>
+      {rs && <ResolvedBadge rs={rs} provLabel={provLabel} auto={sel.mode === 'auto'} />}
+      {/* on-device video needs an Apple-Silicon Mac; a local-resolved-but-unrunnable stage says so (never silent cloud) */}
+      {localResolved && !rs?.localAvailable && (
+        <div className="text-xs text-amber-200/80">Not runnable on this Mac — add your {provLabel} key below, then pick Cloud.</div>
+      )}
+      {localResolved && rs?.localAvailable && <ModelDownload stage={id} model={model} size={size} />}
+      {id === 'VIDEO' && localResolved && <VideoQuality settings={settings} patch={patch} />}
+      {id === 'VIDEO' && rs?.backend === 'cloud' && (
+        <div className="text-xs text-slate-500">Cloud video: Kling · 1280×720</div>
+      )}
+    </div>
+  );
+}
+
+// Master control: Auto · Prefer local · Prefer cloud. Prefer-cloud with no key still runs everything local.
+function BackendModeControl({ value, anyKey, onChange }: {
+  value: Settings['backendPreference']; anyKey: boolean; onChange: (v: Settings['backendPreference']) => void;
+}) {
+  return (
+    <div>
+      <Segmented label="Backend mode" value={value} onChange={onChange} columns={3} options={[
+        { value: 'auto', title: 'Auto', desc: 'local by default' },
+        { value: 'prefer-local', title: 'Prefer local', desc: 'always on-device' },
+        { value: 'prefer-cloud', title: 'Prefer cloud', desc: 'cloud where keyed' },
+      ]} />
+      {value === 'prefer-cloud' && !anyKey && (
+        <div className="mt-2 rounded-xl bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-xs text-amber-200/90">
+          No keys yet — everything still runs locally.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// On-device (Hardware) — never gated on a key. sttLang / workers / localWanDir are on-device knobs a keyless
+// user must reach; an unsupported verdict nudges toward Cloud but disables nothing.
+function HardwareCard({ settings, caps, patch }: {
+  settings: Settings; caps: LocalCapabilities; patch: (p: Partial<Settings>) => void;
+}) {
+  return (
+    <Card className="p-5 space-y-4">
+      <div className="flex items-center gap-2">
+        <Cpu className="w-5 h-5 text-violet-300" /><h2 className="font-semibold text-slate-100">On-device</h2>
+        <span className="text-xs text-slate-500 ml-auto">{caps.ramGB}GB unified memory</span>
+      </div>
+      {!caps.supported ? (
+        <div className="rounded-xl bg-amber-500/10 border border-amber-500/20 px-3 py-2.5 text-sm text-amber-200/90">
+          On-device video needs an <b>Apple-Silicon Mac with 32 GB+</b>. This machine can make videos via Cloud — add an OpenRouter key below (and a Replicate key for lyric timing).
+        </div>
+      ) : !caps.depsInstalled ? (
+        <div className="rounded-xl bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-xs text-amber-200/90">
+          Local engine not installed yet — run <code className="text-amber-100">bash local/setup.sh</code> once (installs mlx + downloads the models).
+        </div>
+      ) : (
+        <p className="text-sm text-slate-400 -mt-1">Local stages run on this Mac (MLX) — no key, no cloud, fully offline. Video needs ~24GB free at peak; {caps.recommendedRamGB}GB memory recommended.</p>
+      )}
+      <Field label="Lyrics language" hint="blank = auto-detect">
+        <input className={inputCls} defaultValue={settings.sttLang} placeholder="it, en, es…"
+          onBlur={(e) => patch({ sttLang: e.target.value.trim() })} />
+      </Field>
+      <Field label="Render workers" hint="parallel scenes (local video is GPU-serialized to 1)">
+        <input type="number" min={1} max={16} className={cx(inputCls, 'max-w-28')} defaultValue={settings.workers}
+          onBlur={(e) => { const n = parseInt(e.target.value, 10); patch({ workers: Number.isFinite(n) && n > 0 ? n : settings.workers }); }} />
+      </Field>
+      <Field label="Local Wan folder" hint="blank = default (local/.model-path)">
+        <input className={inputCls} defaultValue={settings.localWanDir} placeholder="/path/to/wan/weights"
+          onBlur={(e) => patch({ localWanDir: e.target.value.trim() })} />
+      </Field>
+    </Card>
+  );
+}
+
+// One key row: password input + Save. Saving only un-greys the Cloud segments — it never flips a stage (I2).
+function KeyRow({ field, saved, onSaved }: {
+  field: (typeof KEY_FIELDS)[number]; saved: boolean; onSaved: () => void;
+}) {
+  const [val, setVal] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  const save = async () => {
+    if (!val.trim()) return;
+    setBusy(true); setErr('');
+    try { await vb.setKey(field.name, val.trim()); setVal(''); onSaved(); }
+    catch (e) { setErr(String((e as Error)?.message || e)); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-2">
+        <span className="text-sm font-medium text-slate-200">{field.label}</span>
+        {saved && <span className="text-xs text-emerald-400 inline-flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" />Saved</span>}
+        <button onClick={() => vb.openExternal(field.url)} className="ml-auto text-xs text-violet-300 hover:text-violet-200 inline-flex items-center gap-1">
+          Get a key <ExternalLink className="w-3 h-3" />
+        </button>
+      </div>
+      <div className="flex gap-2">
+        <input type="password" className={inputCls} value={val} onChange={(e) => setVal(e.target.value)}
+          placeholder={saved ? 'Saved — enter a new key to replace' : `Paste your ${field.label} key`} />
+        <Button variant="soft" loading={busy} disabled={!val.trim()} onClick={save}>Save</Button>
+      </div>
+      <div className="text-xs text-slate-500">{field.hint}</div>
+      {err && <div className="text-xs text-red-300">{err}</div>}
+    </div>
+  );
+}
+
+// Advanced — cloud model slugs. Cloud-only, so it only renders when ≥1 key is present (nothing to configure otherwise).
+function AdvancedCard({ settings, patch }: { settings: Settings; patch: (p: Partial<Settings>) => void }) {
+  return (
+    <Card className="p-5 space-y-4">
+      <div className="flex items-center gap-2">
+        <SettingsIcon className="w-5 h-5 text-violet-300" /><h2 className="font-semibold text-slate-100">Advanced · cloud models</h2>
+      </div>
+      <p className="text-sm text-slate-400 -mt-2">Provider slugs for the cloud stages. Leave as-is unless you know a better model.</p>
+      <div className="grid sm:grid-cols-2 gap-3">
+        {MODEL_FIELDS.map((f) => (
+          <Field key={f.key} label={f.label}>
+            <input className={inputCls} defaultValue={settings.cloud[f.key]}
+              onBlur={(e) => patch({ cloud: { ...settings.cloud, [f.key]: e.target.value.trim() || settings.cloud[f.key] } })} />
+          </Field>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
 function SettingsScreen() {
   const qc = useQueryClient();
   const settings = useQuery({ queryKey: ['settings'], queryFn: () => vb.getSettings() });
   const caps = useQuery({ queryKey: ['localCaps'], queryFn: () => vb.localCapabilities() });
+  const keys = useQuery({ queryKey: ['keysStatus'], queryFn: () => vb.keysStatus() });
+  const resolved = useQuery({ queryKey: ['resolved'], queryFn: () => vb.resolvedBackends() });
   const [dataDir, setDataDir] = useState('');
   useEffect(() => { vb.dataDir().then(setDataDir); }, []);
 
-  const mode: '5b' | '14b' = settings.data?.localVideoModel === '5b' ? '5b' : '14b';
-  const setMode = (m: '5b' | '14b') => vb.setSettings({ localVideoModel: m }).then(() => qc.invalidateQueries({ queryKey: ['settings'] }));
+  // Every settings write can change what the resolver returns → invalidate both queries.
+  const patch = useCallback((p: Partial<Settings>) => {
+    vb.setSettings(p).then(() => {
+      qc.invalidateQueries({ queryKey: ['settings'] });
+      qc.invalidateQueries({ queryKey: ['resolved'] });
+    });
+  }, [qc]);
+  // Saving/removing a key re-greys/un-greys Cloud segments and can change resolution.
+  const onKeyChanged = useCallback(() => {
+    qc.invalidateQueries({ queryKey: ['keysStatus'] });
+    qc.invalidateQueries({ queryKey: ['resolved'] });
+  }, [qc]);
+
+  const s = settings.data;
+  const caps_ = caps.data;
+  if (!s || !caps_) return <div className="max-w-2xl animate-fade-up"><Card className="p-8 grid place-items-center"><Spinner className="w-6 h-6" /></Card></div>;
+
+  const k = keys.data || {};
+  const anyKey = Object.values(k).some(Boolean);
 
   return (
     <div className="space-y-5 animate-fade-up max-w-2xl">
-      {settings.data && caps.data && (
-        <Card className="p-5 space-y-4">
-          <div className="flex items-center gap-2">
-            <Film className="w-5 h-5 text-violet-300" /><h2 className="font-semibold text-slate-100">On-device models</h2>
-            <span className="text-xs text-slate-500 ml-auto">{caps.data.ramGB}GB unified memory</span>
-          </div>
+      <p className="text-sm text-slate-400">
+        Videoboom runs on your Mac by default — private, no key, no cost. Add a key only to unlock cloud where you want it.
+      </p>
 
-          {!caps.data.supported ? (
-            <div className="rounded-xl bg-amber-500/10 border border-amber-500/20 px-3 py-2.5 text-sm text-amber-200/90">
-              Videoboom runs entirely on-device and needs an <b>Apple Silicon Mac</b> with <b>{caps.data.minRamGB}GB+</b> unified memory ({caps.data.recommendedRamGB}GB recommended). {caps.data.reason}
-            </div>
-          ) : (
-            <>
-              <p className="text-sm text-slate-400 -mt-1">Everything runs on this Mac (MLX) — no key, no cloud, fully offline. Each model downloads once. Video needs ~24GB free at peak; {caps.data.recommendedRamGB}GB memory recommended.</p>
-              {!caps.data.depsInstalled && (
-                <div className="rounded-xl bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-xs text-amber-200/90">
-                  Local engine not installed yet — run <code className="text-amber-100">bash local/setup.sh</code> once (installs mlx + downloads the models).
-                </div>
-              )}
-              <Field label="Video quality">
-                <div className="grid grid-cols-2 gap-2">
-                  {VIDEO_MODES.map((v) => (
-                    <button key={v.key} onClick={() => setMode(v.key)}
-                      className={cx('rounded-lg border px-3 py-2 text-left transition-colors',
-                        mode === v.key ? 'border-violet-400/60 bg-violet-500/10 text-slate-100' : 'border-white/10 hover:bg-white/[0.03] text-slate-300')}>
-                      <div className="text-sm font-medium">{v.title}</div><div className="text-xs text-slate-500">{v.sub}</div>
-                    </button>
-                  ))}
-                </div>
-              </Field>
-              <p className="text-xs text-slate-400 -mt-2">Both modes finish at 1080p — the shot renders at 480p on-device, then the finish pass interpolates + upscales.</p>
-              <div className="border-t border-white/5 pt-3 space-y-0.5">
-                <div className="text-xs font-medium text-slate-400 mb-1">Models on disk</div>
-                {DL_STAGES.map((st) => <StageDownloadRow key={st.stage} st={st} />)}
-              </div>
-              <Field label="Lyrics language" hint="blank = auto-detect">
-                <input className={inputCls} defaultValue={settings.data.sttLang} placeholder="it, en, es…"
-                  onBlur={(e) => vb.setSettings({ sttLang: e.target.value.trim() }).then(() => qc.invalidateQueries({ queryKey: ['settings'] }))} />
-              </Field>
-            </>
-          )}
-        </Card>
-      )}
+      <Card className="p-5">
+        <BackendModeControl value={s.backendPreference} anyKey={anyKey} onChange={(v) => patch({ backendPreference: v })} />
+      </Card>
+
+      <Card className="p-5">
+        <div className="flex items-center gap-2 mb-1">
+          <Film className="w-5 h-5 text-violet-300" /><h2 className="font-semibold text-slate-100">Stages</h2>
+          <span className="text-xs text-slate-500 ml-auto">where each step runs</span>
+        </div>
+        {STAGE_ROWS.map((row) => (
+          <StageBackendRow key={row.id} row={row} settings={s} keys={k} resolved={resolved.data} patch={patch} />
+        ))}
+      </Card>
+
+      <HardwareCard settings={s} caps={caps_} patch={patch} />
+
+      <Card className="p-5 space-y-4">
+        <div className="flex items-center gap-2">
+          <KeyRound className="w-5 h-5 text-violet-300" /><h2 className="font-semibold text-slate-100">API keys</h2>
+          <span className="text-xs text-slate-500 ml-auto">optional</span>
+        </div>
+        <p className="text-sm text-slate-400 -mt-2">
+          Add a key to unlock cloud for any stage. Videoboom works fully without keys. Keys are encrypted with your OS keychain and never leave this machine.
+        </p>
+        {KEY_FIELDS.map((f) => <KeyRow key={f.name} field={f} saved={!!k[f.name]} onSaved={onKeyChanged} />)}
+      </Card>
+
+      {anyKey && <AdvancedCard settings={s} patch={patch} />}
 
       <Card className="p-4 text-xs text-slate-500">Projects are stored in <span className="text-slate-300 break-all">{dataDir}</span></Card>
     </div>
