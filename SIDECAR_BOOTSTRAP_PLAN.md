@@ -73,7 +73,7 @@ Two operational caveats that keep this an honest "yes":
    reproduce it.
 
 2. **Model provisioning has one external blocker: the HF org.** The out-of-box
-   *Fast* tier needs `videoboom/FastWan2.2-TI2V-5B-MLX` published self-contained
+   *Fast* tier needs `lBroth/FastWan2.2-TI2V-5B-MLX` published self-contained
    (its `t5_encoder`/`vae` are currently symlinks on the dev box). Until it
    lands, ship the **14B interim default**, which works from public/community
    repos but is heavier and does not fit the app's own 32 GB floor. See §5, §10.
@@ -495,7 +495,7 @@ per-engine marker write.
 
 | Engine | Repo | Size | Marker | Fits 32 GB? |
 |---|---|---|---|---|
-| `5b` Fast (target default) | `videoboom/FastWan2.2-TI2V-5B-MLX` | ~24 GB | `.model-path-5b` | **yes** |
+| `5b` Fast (target default) | `lBroth/FastWan2.2-TI2V-5B-MLX` | ~24 GB | `.model-path-5b` | **yes** |
 | `14b` Quality (interim default) | `Anes1032/Wan2.2-I2V-A14B-mlx-q8` | ~43 GB | `.model-path` | no (needs 48 GB+) |
 
 **Recommended (mandatory) set — the keyless render prerequisites.**
@@ -507,7 +507,7 @@ portrait-only). So the mandatory set is exactly those four:
 | STT | `mlx-community/whisper-large-v3-turbo` | ~1.6 GB |
 | LLM | `lmstudio-community/Qwen3.6-35B-A3B-MLX-4bit` | ~20 GB |
 | KEYFRAME | `dhairyashil/FLUX.1-schnell-mflux-4bit` | ~9.6 GB |
-| VIDEO (5b) | `videoboom/FastWan2.2-TI2V-5B-MLX` | ~24 GB |
+| VIDEO (5b) | `lBroth/FastWan2.2-TI2V-5B-MLX` | ~24 GB |
 | **Lightning LoRA** (14b tier only) | `lightx2v/Wan2.2-Lightning` (I2V-A14B-4steps) | ~2.5 GB |
 
 Fast tier total ≈ **~55 GB**; 14B interim tier ≈ 31 GB (STT+LLM+KEYFRAME) + 43 GB
@@ -570,9 +570,10 @@ local_dir=models_dir/<name>)`, write the correct per-engine marker into
 **HF-org dependency (D1).** Spot-checks: `Anes1032/Wan2.2-I2V-A14B-mlx-q8` exists
 (~42.7 GB, real `t5_encoder`, `config.json`) but surfaces library tag `mlx` (not
 `mlx-video`) — **load-test it through the Blaizzy mlx-video pipeline before
-committing**. `videoboom/FastWan2.2-TI2V-5B-MLX` returns **HTTP 401** — not yet
-public; and on the dev box its `t5_encoder.safetensors`/`vae.safetensors` are
-**symlinks** into `Wan2.2-TI2V-5B-MLX` (verified `ls -la`), so the publish step
+committing**. **RESOLVED 2026-07-06:** `lBroth/FastWan2.2-TI2V-5B-MLX` is
+**published, public, ungated, self-contained** (model.safetensors 10.0 GB +
+t5_encoder 11.36 GB + vae 2.82 GB = 24.18 GB; the dev-box symlinks were followed
+by `upload_folder` so the real content is on the Hub). The publish step
 must **inline them as real files** (~10 GB model + ~11.4 GB T5 + ~2.8 GB VAE ≈ 24
 GB). Its `config.json` carries the `fastwan_dmd` block the engine reads
 (`wan_i2v.py:138-140`), which the community base 5B repos lack — so no community
@@ -733,7 +734,7 @@ that CI cannot produce.
 | **M3h** | Harden + verify phases | `hardenProvisionedTree` (per-Mach-O re-sign), `verifyRuntime` exec probe. | **hardware-only** |
 | **M3i** | Renderer UX | `EngineSetup.tsx`; Onboarding `'provision'` step; StageBackendRow tri-state; replace 4 `setup.sh` strings; size labels. | CI-testable (build + `VB_SMOKE`) |
 | **M3j** | electron-builder + vendoring | `extraResources`; `git add -f` rife-v4.26 + taew2_1; `build/bin/uv`; `build/wheels/*.whl`; `requirements.macos.lock` (CI compile job); sign `uv` in `mac-sign.js`. | Build green in CI; packaged sidecar resolution hardware-only |
-| **M3k** | Publish `videoboom/FastWan2.2-TI2V-5B-MLX` | External HF upload, self-contained (inline the T5/VAE symlinks). | external / manual |
+| **M3k** | ~~Publish `lBroth/FastWan2.2-TI2V-5B-MLX`~~ **DONE 2026-07-06** | Published public + self-contained (24.18 GB, symlinks followed on upload). | ✅ done |
 | **M3l** | Load-test + confirm 14B interim | Load-test `Anes1032` Q8 through mlx-video; confirm Lightning loads on Q8; keep `DEFAULTS.localVideoModel='14b'`, hide Fast tile "coming soon". | hardware-only |
 | **M3m** | Real-hardware harden QA gate | Download→open quarantined `.dmg`→bootstrap→`/health` on macOS 26 (Tahoe) **and** Sequoia. | **hardware-only (blocking ship)** |
 | **M3n** | Flip default to 5b | Once M3k lands + load-tested: `DEFAULTS.localVideoModel='5b'` (`settingsSchema.ts:42`) + `videoModel()` default (`localVideo.ts:15`); re-enable Fast tile; recommended set→Fast (~55 GB). One-line data change behind `VIDEO_ENGINES`. | CI-testable + hardware smoke |
@@ -746,11 +747,12 @@ M3g–M3j build the bootstrap and packaging. M3h and M3m are the two commits tha
 
 ## 10. Open decisions for the user
 
-- **D1 — HF org (`videoboom/*`).** Mandatory before a Fast-tier ship: publish
-  `videoboom/FastWan2.2-TI2V-5B-MLX` **self-contained** (inline the dev-box
-  symlinked `t5_encoder`/`vae`; currently HTTP 401). Optional later re-hosts
-  (pinned `videoboom/Wan2.2-I2V-A14B-*`, a shared T5) are provenance insurance,
-  not correctness. **Decision needed:** create/authorize the org and upload, or
+- **D1 — pre-converted hosting. RESOLVED 2026-07-06:** published under the
+  **`lBroth`** namespace (not a `videoboom` org): `lBroth/FastWan2.2-TI2V-5B-MLX`
+  is live, public, self-contained (24.18 GB). The Fast tier can now provision
+  out-of-box. Optional later re-hosts (a pre-converted 14B, a shared T5) are
+  provenance insurance, not correctness — publish under `lBroth` the same way.
+  Superseded original text: **Decision needed:** create/authorize the org and upload, or
   ship the 14B-only interim indefinitely.
 
 - **D2 — 14B model default (Q4 vs bf16 vs Q8).** The current HEAD engine default
