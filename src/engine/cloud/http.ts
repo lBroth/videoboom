@@ -3,6 +3,7 @@
 // the OpenRouter base + auth header. Restored from 5125093~1:src/engine/providers.ts.
 import fs from 'node:fs';
 import { env } from '../config';
+import { hostAllowed } from '../../shared/netAllowlist';
 
 export const OR = 'https://openrouter.ai/api/v1';
 export const UA =
@@ -20,6 +21,11 @@ interface HttpErr extends Error {
 }
 
 export async function httpJson(url: string, init: RequestInit, timeoutMs: number): Promise<any> {
+  // Backstop: a cloud client may only ever reach a known provider host (defends against a mistyped/hijacked
+  // slug or endpoint pointing traffic off-provider). The resolver already ensures we're here only when opted in.
+  let host = '';
+  try { host = new URL(url).hostname; } catch { /* invalid URL → blocked below */ }
+  if (!hostAllowed(host)) throw new Error(`blocked non-allowlisted host: ${host || url}`);
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), timeoutMs);
   try {

@@ -1,7 +1,7 @@
 // Main process: window lifecycle + the IPC surface the renderer calls. The renderer never spawns
 // processes — it asks main, main composes the on-device model env (settings) and runs the engine/sidecar,
 // streaming progress events back over a channel. Everything runs locally; there are no secrets.
-import { app, BrowserWindow, ipcMain, dialog, screen, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, screen, shell, session } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import { runEngine, dataDir, EngineEvent } from '../engine';
@@ -12,6 +12,7 @@ const ICON = path.join(app.getAppPath(), 'icons', 'icon.png');
 import { getSettings, setSettings, Settings } from './settings';
 import { keyStatus, setKey, keysEnv } from './keychain';
 import { resolveConfig, type KeyState } from './autoconfig';
+import { CLOUD_HOSTS, hostAllowed } from '../shared/netAllowlist';
 import { modelStatus, downloadModel, localCapabilities, DownloadRun } from './localModels';
 import { getProject, listScenes, listProjects, listCharacters, mediaUrl } from './projects';
 
@@ -80,6 +81,40 @@ function resolvedConfig() {
 function sidecarEnv(): Record<string, string> {
   // Optional cloud keys (decrypted, main-process only) + the resolved per-stage backends / slugs / local block.
   return { ...keysEnv(), ...resolvedConfig().toEnv() };
+}
+
+// ── network firewall (deny-by-default) ───────────────────────────────────────────
+// Host patterns the Electron session may reach right now: a provider's hosts ONLY when it's keyed AND at
+// least one stage actually resolved to its cloud backend. Recomputed on boot + whenever keys/settings change.
+let FW_HOSTS: string[] = [];
+function refreshFirewall(): void {
+  const keys = keyState();
+  const stages = resolvedConfig().stages;
+  const inUse = { openrouter: false, replicate: false };
+  for (const [stage, rs] of Object.entries(stages)) {
+    if (rs.backend === 'cloud') { if (stage === 'STT') inUse.replicate = true; else inUse.openrouter = true; }
+  }
+  FW_HOSTS = [
+    ...(keys.openrouter && inUse.openrouter ? CLOUD_HOSTS.openrouter : []),
+    ...(keys.replicate && inUse.replicate ? CLOUD_HOSTS.replicate : []),
+  ];
+}
+/** Install the deny-by-default firewall on the default session: local schemes + localhost (dev renderer +
+ * the on-device sidecar) always pass; external http(s)/ws only to a currently-opted-in cloud host; everything
+ * else is cancelled. No key / no opt-in ⇒ FW_HOSTS is empty ⇒ zero external requests. */
+function setupFirewall(): void {
+  refreshFirewall();
+  session.defaultSession.webRequest.onBeforeRequest((details, cb) => {
+    let u: URL;
+    try { u = new URL(details.url); } catch { return cb({}); }
+    const scheme = u.protocol.replace(':', '');
+    if (!['http', 'https', 'ws', 'wss'].includes(scheme)) return cb({});        // file/devtools/data/blob/chrome
+    const host = u.hostname.toLowerCase();
+    if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]') return cb({});
+    if (hostAllowed(host, FW_HOSTS)) return cb({});                             // opted-in cloud provider
+    console.error('[firewall] blocked outbound:', host);
+    cb({ cancel: true });
+  });
 }
 
 // Run a streaming engine op: forward each event to the renderer on `sidecar:<opId>`, resolve on result.
@@ -223,11 +258,11 @@ function registerIpc() {
 
   // ── config ──
   ipcMain.handle('settings:get', () => getSettings());
-  ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => setSettings(patch));
+  ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => { const s = setSettings(patch); refreshFirewall(); return s; });
 
   // ── optional cloud keys (safeStorage; the app works fully with none) ──
   ipcMain.handle('keys:status', () => keyStatus());
-  ipcMain.handle('keys:set', (_e, name: string, value: string) => { setKey(name, value); return keyStatus(); });
+  ipcMain.handle('keys:set', (_e, name: string, value: string) => { setKey(name, value); refreshFirewall(); return keyStatus(); });
 
   // ── native pickers ──
   ipcMain.handle('dialog:openAudio', async () => {
@@ -304,6 +339,7 @@ app.whenReady().then(async () => {
     return;
   }
   if (process.platform === 'darwin' && app.dock && fs.existsSync(ICON)) app.dock.setIcon(ICON);   // dock icon in dev
+  setupFirewall();
   registerIpc();
   createWindow();
 });
