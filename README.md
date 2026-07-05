@@ -36,11 +36,10 @@ resident Python MLX sidecar — transcription (Whisper), story + shot list (Qwen
 is fully local, private and offline: the only time Videoboom touches the network is to download the model
 weights once, and your song and your video never leave your machine.
 
-You can also **bring your own key to unlock cloud, selectable per stage** — OpenRouter (LLM, VLM,
-keyframes), Kling (video), Replicate (WhisperX lyric timing). A key only *unlocks* the option; it never
-switches a stage on its own, and nothing leaves your machine unless you explicitly enable cloud for that
-stage. Runs on your Mac by default — private, no key, no cost. Add a key only to unlock cloud where you
-want it.
+Local is the point: **private, free to run, offline** once the models are downloaded. Want more speed or a
+specific model on one stage? You can **optionally** bring your own key to run that stage in the cloud
+(OpenRouter · Kling · Replicate) — it's **off by default**, chosen per stage, and nothing leaves your
+machine unless you turn it on for that stage.
 
 > **Why local-default?** Cloud video generation is expensive and sends your song to someone else's servers.
 > Running the models locally means it's private, it's free to run, and it works offline once the models
@@ -66,11 +65,19 @@ song ─▶ transcribe (forced-aligned) ─▶ story from the lyrics ─▶ shot
   you turn it on.
 - AI-generated output is tagged as such in the file metadata.
 
-## Requirements
-On-device generation needs an **Apple Silicon Mac (M-series)** with **32GB+ unified memory** (48GB
-recommended — the Wan video model peaks around 24GB). The app checks this and gates the local models
-accordingly. Prefer cloud for some stages? Bring your own key and those stages will run against the
-provider instead — but on-device stays the default.
+## System requirements
+Videoboom runs the AI models **on your own GPU** — nothing is streamed, nothing is metered. On-device
+generation needs one of:
+
+| GPU | Minimum | Status |
+|-----|---------|--------|
+| **Apple Silicon — MLX / Metal** | M-series Mac · **32 GB+ unified memory** (48 GB recommended — the Wan video model peaks ~24 GB) | ✅ shipping |
+| **NVIDIA — CUDA** | driver ≥ 570 · **8 GB+ VRAM** · compute capability ≥ 8.6 · Windows / Linux | 🚧 on the roadmap |
+
+Plus **~50 GB free disk** for the model weights (downloaded once). The app detects your machine, picks the
+right models and quantization for it, and gates local generation until you meet the bar. No supported GPU?
+You can still generate by opting individual stages into cloud with your own key — but on-device stays the
+default.
 
 ## Install (run from source)
 ```bash
