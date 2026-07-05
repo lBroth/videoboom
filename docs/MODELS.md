@@ -10,7 +10,7 @@ keys — the network is used only to download the model weights once. The TypeSc
 | Transcription / timing (STT) | `whisper-large-v3-turbo` (mlx-whisper) | `localStt.ts` | per-word timestamps → vocal-locked editing; zero words = instrumental (proceeds) |
 | Story bible + shot list (LLM) | Qwen3 (mlx-lm) | `localLlm.ts` | structured JSON output |
 | Keyframes | FLUX schnell + FLUX Kontext (mflux) | `localKeyframe.ts` | no ref → schnell txt2img; cast ref → Kontext, identity-preserving |
-| Video (image-to-video) | Wan 2.2 I2V-A14B (default) / TI2V-5B (mlx-video) | `localVideo.ts` | 14B fast = Lightning 4-step, hd = full-step; 480p, chained sub-clips per scene |
+| Video (image-to-video) | Wan 2.2 — FastWan-5B (Fast) / I2V-A14B bf16-relay (Quality), mlx-video | `localVideo.ts` | Fast = FastWan-5B DMD 3-step; Quality = 14B Lightning; renders 480p, chained sub-clips per scene, both finish at 1080p |
 | Portrait caption + upload safety (VLM) | gemma-3 (mlx-vlm) | `localVlm.ts` | caption anchors identity; safety is fail-open |
 | Interpolation | RIFE (ncnn) | sidecar `/interp` | de-judders the 14B's native 16fps onto the 24fps timeline |
 | Upscale | Real-ESRGAN | sidecar `/upscale` | one 480p → 1080p pass over the assembled timeline |
@@ -22,5 +22,5 @@ stage's weights into the Hugging Face cache. The Wan video model is additionally
 quantized MLX model, and its path is recorded in `local/.model-path` — that marker is the readiness check
 for the video stage. A render is gated until STT, LLM, keyframe, and video models are all present.
 
-Video model + quality (`fast`/`hd`) are chosen in `src/main/settings.ts` and injected as `VB_*` env vars.
+The Fast/Quality video choice (= FastWan-5B / Wan-14B) is set in `src/main/settings.ts` and injected as `VB_*` env vars.
 See `docs/LOCAL-MODELS.md` for the detailed model notes and the finish chain.

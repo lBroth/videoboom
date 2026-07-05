@@ -1,5 +1,5 @@
 // Render orchestration: storyboard -> keyframe pass -> clip pass -> assemble. Async + local. Each scene's
-// clip renders via providers.genVideo (submit + poll) inside a bounded concurrency pool. Progress is
+// clip renders via genVideoLocal (mlx-video sidecar) inside a bounded concurrency pool. Progress is
 // reported through an `emit(event)` callback the engine turns into IPC events. Segmentation / shot-list /
 // frame-grid logic is a verbatim port of the proven pipeline.
 import crypto from 'node:crypto';

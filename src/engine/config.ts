@@ -1,5 +1,5 @@
-// Runtime config for the engine: BYOK keys + VB_* model choices, injected per run from the main process
-// (keychain + settings). Reads fall back to process.env so the values are also usable in dev/tests.
+// Runtime config for the engine: VB_* on-device model choices + render options, injected per run from the
+// main process (local settings). Reads fall back to process.env so the values are also usable in dev/tests.
 const CFG: Record<string, string> = {};
 
 /** Merge an injected env map (decrypted keys + settings) into the runtime config. Last write wins. */

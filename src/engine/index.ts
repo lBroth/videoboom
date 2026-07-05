@@ -93,7 +93,7 @@ async function dispatch(command: string, f: Record<string, string | boolean>, em
 }
 
 /**
- * Run one engine operation. `extraEnv` carries the BYOK keys + model overrides (keychain + settings).
+ * Run one engine operation. `extraEnv` carries the on-device model choices + render options (settings).
  * `onEvent` receives every progress event live; the returned promise resolves with the terminal `result`
  * (or rejects on error) — identical to the old sidecar contract.
  */

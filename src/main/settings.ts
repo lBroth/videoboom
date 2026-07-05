@@ -12,8 +12,8 @@ export interface Settings {
   settingsVersion: number;
   sttLang: string;          // VB_STT_LANG — '' = auto-detect
   workers: number;          // parallel scene render concurrency (video is GPU-serialized, so effectively 1)
-  localVideoModel: '5b' | '14b'; // VB_LOCAL_VIDEO_MODEL — Wan 5B (fast, deforms people) / Wan 14B (default)
-  localQuality: 'fast' | 'hd';   // fast = 480p Lightning 4-step, hd = slower higher-step
+  localVideoModel: '5b' | '14b'; // VB_LOCAL_VIDEO_MODEL — Fast = FastWan-5B (DMD 3-step) / Quality = Wan 14B (default)
+  localQuality: 'fast' | 'hd';   // within-model speed knob (14B: fast = Lightning 4-step, hd = full-step)
   localWanDir: string;      // VB_LOCAL_WAN_DIR — '' = read local/.model-path
 }
 

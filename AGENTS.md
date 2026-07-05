@@ -70,10 +70,13 @@ Nothing about the song or the video leaves the machine. Targets macOS (Apple Sil
   engine rewrites `app.asar` → `app.asar.unpacked` in the binary path.
 
 ## Image / video generation
-- **Video model = Wan 2.2** on-device (mlx-video): I2V-A14B is the default (fast = Lightning 4-step, hd =
-  full-step), with TI2V-5B as the fast tier. Each scene renders as one continuous shot of chained native
-  sub-clips (single start frame), then trims to the frame grid — never a stretched slow-mo clip. Keep the
-  5b/14b + fast/hd logic in `localVideo.ts` intact.
+- **Video model = Wan 2.2** on-device (mlx-video). The Fast/Quality choice IS the model choice: **Fast** =
+  FastWan-5B (DMD 3-step draft, `.model-path-5b` → FastWan2.2-TI2V-5B-MLX, marker-forced in
+  `local/wan_i2v.py`); **Quality** = Wan I2V-A14B bf16-relay. **Both finish at 1080p** — the shot renders
+  at 480p on-device, then the finish pass interpolates (RIFE) + upscales (Real-ESRGAN) to 1080p (native
+  1080p diffusion OOMs on-device). Each scene renders as one continuous shot of chained native sub-clips
+  (single start frame), then trims to the frame grid — never a stretched slow-mo clip. Keep the `5b`/`14b`
+  selection in `localVideo.ts` intact (`localVideoModel` in settings drives it).
 - **Identity**: keyframes are built from the cast's reference portraits with a strong "reproduce every
   facial feature exactly, no blending/de-aging" prompt; the cap (`VB_MAX_SUBJECTS`) must cover the whole
   cast (a dropped reference = an invented subject). The clip animates the keyframe, so keyframe identity
