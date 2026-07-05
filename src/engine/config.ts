@@ -1,5 +1,6 @@
-// Runtime config for the engine: VB_* on-device model choices + render options, injected per run from the
-// main process (local settings). Reads fall back to process.env so the values are also usable in dev/tests.
+// Runtime config for the engine: VB_* backend selection + model choices + render options, injected per run
+// from the main process (resolver output + optional cloud keys). Reads fall back to process.env so the
+// values are also usable in dev/tests.
 const CFG: Record<string, string> = {};
 
 /** Merge an injected env map (decrypted keys + settings) into the runtime config. Last write wins. */
@@ -24,4 +25,12 @@ export function envBool(k: string, d = false): boolean {
   const v = env(k, '').toLowerCase();
   if (!v) return d;
   return v === '1' || v === 'true' || v === 'yes';
+}
+
+/** Per-stage backend: 'local' (default) or 'cloud'. Read as VB_<STAGE>_BACKEND, e.g. stageBackend('LLM')
+ * -> VB_LLM_BACKEND. The auto-config resolver always emits an explicit value, so this default is only a
+ * failsafe — and the failsafe is LOCAL (a missing env can never route to cloud; defense-in-depth for the
+ * no-key/no-opt-in invariants). The pipeline never reads this; only backends/registry.ts does. */
+export function stageBackend(stage: string, d: 'cloud' | 'local' = 'local'): 'cloud' | 'local' {
+  return env('VB_' + stage + '_BACKEND', d) === 'cloud' ? 'cloud' : 'local';
 }

@@ -16,10 +16,20 @@ export interface Scene {
   index: number; status?: string; title?: string; lyric?: string; error?: string;
   startSec?: number; endSec?: number;
 }
+export type Stage = 'STT' | 'LLM' | 'VLM' | 'KEYFRAME' | 'VIDEO';
+export type Backend = 'cloud' | 'local';
+export interface StageSelection { mode: 'auto' | 'manual'; backend?: Backend; }
+export interface CloudModels {
+  storyModel: string; llmModel: string; keyframeModel: string;
+  videoModel: string; vlmModel: string; moderationModel: string;
+}
 export interface Settings {
-  settingsVersion: number;
+  settingsVersion: number;                                     // 3
+  backendPreference: 'auto' | 'prefer-local' | 'prefer-cloud'; // master control
+  stages: Record<Stage, StageSelection>;                       // per-stage auto/pin
+  cloud: CloudModels;                                          // OpenRouter/Replicate slugs (advanced)
+  // ── on-device knobs. Fast = FastWan-5B (DMD 3-step), Quality = Wan 14B (bf16-relay); both finish 1080p.
   sttLang: string; workers: number;
-  // Fast = FastWan-5B (DMD 3-step draft), Quality = Wan 14B (bf16-relay); both finish at 1080p.
   localVideoModel: '5b' | '14b'; localQuality: 'fast' | 'hd'; localWanDir: string;
 }
 export interface LocalCapabilities {

@@ -1,49 +1,17 @@
-// Non-secret app settings for the local-only build: on-device video model choice + a couple of render
-// options. Plain JSON under userData (there are no secrets — everything runs on-device). They become VB_*
-// env vars for the engine/sidecar at spawn time. Schema is versioned so an old cloud-build settings.json
-// migrates cleanly on first read.
+// App settings IO for the local-default HYBRID build. The pure schema (types, DEFAULTS, migrate) lives in
+// settingsSchema.ts so the resolver + tests can import it without electron; this file adds the electron IO
+// and the VB_* env bridge. Settings become VB_* env vars at spawn time — via the auto-config resolver
+// (src/main/autoconfig.ts) from C5 on; until then settingsEnv() emits today's local env directly.
 import { app } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
+import { SETTINGS_VERSION, DEFAULTS, migrate, type Settings } from './settingsSchema';
 
-export const SETTINGS_VERSION = 2;
-
-export interface Settings {
-  settingsVersion: number;
-  sttLang: string;          // VB_STT_LANG — '' = auto-detect
-  workers: number;          // parallel scene render concurrency (video is GPU-serialized, so effectively 1)
-  localVideoModel: '5b' | '14b'; // VB_LOCAL_VIDEO_MODEL — Fast = FastWan-5B (DMD 3-step) / Quality = Wan 14B (default)
-  localQuality: 'fast' | 'hd';   // within-model speed knob (14B: fast = Lightning 4-step, hd = full-step)
-  localWanDir: string;      // VB_LOCAL_WAN_DIR — '' = read local/.model-path
-}
-
-export const DEFAULTS: Settings = {
-  settingsVersion: SETTINGS_VERSION,
-  sttLang: '',
-  workers: 4,
-  // 14b = the project's measured quality champion (sharp x16 VAE, no people-deform); 5b is the fast tier.
-  localVideoModel: '14b',
-  localQuality: 'fast',
-  localWanDir: '',
-};
+export { SETTINGS_VERSION, DEFAULTS };
+export type { Settings, Stage, Backend, StageSelection, CloudModels } from './settingsSchema';
 
 function file(): string {
   return path.join(app.getPath('userData'), 'settings.json');
-}
-
-/** Coerce any stored blob (incl. a v1 cloud-build settings.json) into the current local-only schema:
- * LTX is gone (localVideoModel:'ltx' -> '14b'), and the removed cloud key/provider/model + per-stage
- * backend fields are dropped by simply not carrying them across. */
-function migrate(raw: any): Settings {
-  const lvm = raw?.localVideoModel;
-  return {
-    settingsVersion: SETTINGS_VERSION,
-    sttLang: typeof raw?.sttLang === 'string' ? raw.sttLang : DEFAULTS.sttLang,
-    workers: Number.isFinite(raw?.workers) ? Number(raw.workers) : DEFAULTS.workers,
-    localVideoModel: lvm === '5b' ? '5b' : '14b',
-    localQuality: raw?.localQuality === 'hd' ? 'hd' : 'fast',
-    localWanDir: typeof raw?.localWanDir === 'string' ? raw.localWanDir : DEFAULTS.localWanDir,
-  };
 }
 
 export function getSettings(): Settings {
@@ -54,8 +22,8 @@ export function getSettings(): Settings {
     return { ...DEFAULTS };
   }
   const s = migrate(raw);
-  // Persist the migrated shape once so the removed fields are actually dropped on disk (and the version
-  // stamped), then never re-migrate.
+  // Persist the migrated shape once so removed fields are dropped on disk (and the version stamped), then
+  // never re-migrate.
   if (raw?.settingsVersion !== SETTINGS_VERSION) {
     try {
       fs.writeFileSync(file(), JSON.stringify(s, null, 2));
@@ -72,7 +40,8 @@ export function setSettings(patch: Partial<Settings>): Settings {
   return next;
 }
 
-/** Settings -> the VB_* environment the engine/sidecar reads. Everything is on-device. */
+/** Settings -> the VB_* environment the engine/sidecar reads (LOCAL block). Superseded by the resolver's
+ * toEnv() at C5; until then this drives today's all-local render unchanged. */
 export function settingsEnv(): Record<string, string> {
   const s = getSettings();
   const model: '5b' | '14b' = s.localVideoModel === '5b' ? '5b' : '14b';
