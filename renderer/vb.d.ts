@@ -73,6 +73,7 @@ export interface VBApi {
   regenerateScene(pid: string, index: number): Promise<Record<string, unknown>>;
   cancel(opId: string): Promise<boolean>;
   localCapabilities(): Promise<LocalCapabilities>;
+  engineState(): Promise<'unsupported' | 'not-bootstrapped' | 'partial' | 'ready'>;
   modelsStatus(): Promise<Record<string, 'ready' | 'absent'>>;
   downloadModel(stage: string): Promise<void>;
   cancelDownload(stage: string): Promise<boolean>;

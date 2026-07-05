@@ -14,7 +14,7 @@ import { keyStatus, setKey, keysEnv } from './keychain';
 import { resolveConfig, type KeyState } from './autoconfig';
 import { localEnv } from './paths';
 import { CLOUD_HOSTS, hostAllowed } from '../shared/netAllowlist';
-import { modelStatus, downloadModel, localCapabilities, DownloadRun } from './localModels';
+import { modelStatus, downloadModel, localCapabilities, engineState, DownloadRun } from './localModels';
 import { getProject, listScenes, listProjects, listCharacters, mediaUrl } from './projects';
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5273';
@@ -178,9 +178,11 @@ function guardRender(pid: string): Promise<never> | null {
   const resolved = resolvedConfig();
   const st = modelStatus();
   const missing: string[] = [];
+  let anyLocal = false;
   for (const { key, label, provider } of RENDER_STAGES) {
     const rs = resolved.stages[key];
     if (rs.backend !== 'local') continue;            // cloud-resolved → no local model needed
+    anyLocal = true;
     if (!rs.localAvailable) {                         // machine can't run this stage on-device
       const provLabel = provider === 'replicate' ? 'Replicate' : 'OpenRouter';
       return refuse(opId, keyState()[provider]
@@ -188,6 +190,10 @@ function guardRender(pid: string): Promise<never> | null {
         : `${label} needs a ${provLabel} key on this machine (on-device isn't supported here). Add one in Settings.`);
     }
     if (st[key] !== 'ready') missing.push(label);     // supported, but the model isn't downloaded yet
+  }
+  // Supported machine, but the on-device engine (Python venv) isn't provisioned → install it in-app.
+  if (anyLocal && engineState(resolved.stages) === 'not-bootstrapped') {
+    return refuse(opId, 'Set up the on-device engine first in Settings → On-device (one-time install of the local model runtime).');
   }
   if (missing.length) return refuse(opId, `Download the local model(s) first in Settings → On-device: ${missing.join(', ')}.`);
   if (renderNeedsGpu() && gpuBusy()) return refuse(opId, 'A generation is already running — only one runs at a time.');
@@ -301,6 +307,7 @@ function registerIpc() {
 
   // ── on-device model availability + downloads (renderer subscribes to download:<STAGE>) ──
   ipcMain.handle('local:capabilities', () => localCapabilities());
+  ipcMain.handle('engine:state', () => engineState(resolvedConfig().stages));
   ipcMain.handle('models:status', () => modelStatus());
   ipcMain.handle('models:download', (_e, stage: string) => {
     if (DOWNLOADS.has(stage)) return DOWNLOADS.get(stage)!.done; // already downloading — join it

@@ -6,6 +6,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import { spawn, ChildProcess } from 'node:child_process';
 import { codeDir, venvPython, hfCacheDir, markerDir, localEnv } from './paths';
+import { getSettings } from './settings';
 
 // Mirror of local/download.py STAGE_REPOS (status only — the python side owns the actual download). VIDEO
 // lists the Wan-AI source repo; download.py snapshots + converts it to MLX (readiness is the setup marker,
@@ -29,10 +30,17 @@ function repoReady(repo: string): boolean {
   }
 }
 
+/** Engine-aware VIDEO readiness: Fast (5b/FastWan) uses the .model-path-5b marker, Quality (14b) uses
+ * .model-path. Each is written only after a complete download/convert, so its presence + a sentinel file
+ * in the target dir means the model is usable. */
 function videoReady(): boolean {
+  const is5b = getSettings().localVideoModel === '5b';
+  const marker = is5b ? '.model-path-5b' : '.model-path';
+  const override = is5b ? process.env.VB_LOCAL_WAN_5B_DIR : process.env.VB_LOCAL_WAN_DIR;
+  const sentinel = is5b ? 'config.json' : 't5_encoder.safetensors';
   try {
-    const dir = (process.env.VB_LOCAL_WAN_DIR || fs.readFileSync(path.join(markerDir(), '.model-path'), 'utf8')).trim();
-    return Boolean(dir) && fs.existsSync(path.join(dir, 't5_encoder.safetensors'));
+    const dir = (override || fs.readFileSync(path.join(markerDir(), marker), 'utf8')).trim();
+    return Boolean(dir) && fs.existsSync(path.join(dir, sentinel));
   } catch {
     return false;
   }
@@ -91,6 +99,23 @@ export function modelStatus(): Record<string, StageState> {
     out[stage] = stage === 'VIDEO' ? (videoReady() ? 'ready' : 'absent') : repos.every(repoReady) ? 'ready' : 'absent';
   }
   return out;
+}
+
+export type EngineState = 'unsupported' | 'not-bootstrapped' | 'partial' | 'ready';
+// Render-required local stages (VLM is portrait-only, not a render prerequisite).
+const RENDER_STAGE_KEYS = ['STT', 'LLM', 'KEYFRAME', 'VIDEO'] as const;
+
+/** Tri-state (+unsupported) engine readiness for the UI + guardRender. Only considers stages the caller's
+ * resolver put on the LOCAL backend — a stage opted into cloud needs neither the engine nor its local model,
+ * so it never makes the engine look 'partial'. */
+export function engineState(stages: Record<string, { backend: 'cloud' | 'local' }>): EngineState {
+  if (!localCapabilities().supported) return 'unsupported';
+  if (!fs.existsSync(venvPython())) return 'not-bootstrapped';
+  const st = modelStatus();
+  for (const key of RENDER_STAGE_KEYS) {
+    if (stages[key]?.backend === 'local' && st[key] !== 'ready') return 'partial';
+  }
+  return 'ready';
 }
 
 export interface DownloadRun {

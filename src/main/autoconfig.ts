@@ -41,7 +41,10 @@ export function pickBackend(
 /** Resolve every stage. `caps` gives the binary local-runnable signal (tier-aware variant choice is a
  * LOCAL_PLAN-M5 follow-on; the backend decision never depends on it — I3). */
 export function resolveConfig(caps: LocalCapabilities, settings: Settings, keys: KeyState): ResolvedConfig {
-  const localRunnable = Boolean(caps.supported && caps.depsInstalled);
+  // HARDWARE only. Bootstrapping the engine + downloading a model are separate, in-app-fixable steps (M3) —
+  // a supported-but-unprovisioned Mac must be told to install the engine, NOT nudged to cloud. So the
+  // resolver's "can this Mac run local?" is caps.supported; readiness is engineState()/guardRender's job.
+  const localRunnable = Boolean(caps.supported);
   const stages = {} as Record<Stage, ResolvedStage>;
   for (const s of STAGES) {
     const { backend, reason } = pickBackend(s, settings.stages[s], settings.backendPreference, keys);

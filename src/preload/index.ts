@@ -34,6 +34,7 @@ export interface VBApi {
   cancel(opId: string): Promise<boolean>;
   // on-device models: capability gate + availability + download (with progress on `download:<STAGE>`)
   localCapabilities(): Promise<any>;
+  engineState(): Promise<'unsupported' | 'not-bootstrapped' | 'partial' | 'ready'>;
   modelsStatus(): Promise<Record<string, 'ready' | 'absent'>>;
   downloadModel(stage: string): Promise<void>;
   cancelDownload(stage: string): Promise<boolean>;
@@ -73,6 +74,7 @@ const api: VBApi = {
   cancel: (opId) => ipcRenderer.invoke('op:cancel', opId),
 
   localCapabilities: () => ipcRenderer.invoke('local:capabilities'),
+  engineState: () => ipcRenderer.invoke('engine:state'),
   modelsStatus: () => ipcRenderer.invoke('models:status'),
   downloadModel: (stage) => ipcRenderer.invoke('models:download', stage),
   cancelDownload: (stage) => ipcRenderer.invoke('models:downloadCancel', stage),
