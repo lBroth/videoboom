@@ -7,9 +7,10 @@ import { env, envInt, envBool } from './config';
 import { vW, vH } from './ffmpeg';
 import { ensureSidecar, sidecarPost, readMarker } from './sidecar';
 
-/** Which local i2v model:
- * '14b' = Wan2.2-I2V-A14B + Lightning 4-step (default — sharp x16 VAE, best quality, no deform; slow),
- * '5b'  = Wan2.2-TI2V-5B (single start frame, fast, but its x64 VAE deforms people). */
+/** Which local i2v model (the Fast/Quality choice in Settings):
+ * '14b' = Quality — Wan2.2-I2V-A14B + Lightning 4-step (sharp x16 VAE, best quality, no deform; slow),
+ * '5b'  = Fast — FastWan2.2-TI2V-5B DMD 3-step draft (single start frame, ~4-5 min/clip; x64 VAE,
+ *         ghosting in camera transitions). Both finish at 1080p via the interpolate+upscale pass. */
 export function videoModel(): '5b' | '14b' {
   return env('VB_LOCAL_VIDEO_MODEL', '14b') === '5b' ? '5b' : '14b';
 }
