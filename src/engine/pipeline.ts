@@ -5,6 +5,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { env, envInt, envBool } from './config';
+import { costTotal } from './cost';
 import * as S from './storage';
 
 /** Read up to the first + last 256KB of a file into one buffer (cheap content fingerprint for large media). */
@@ -851,7 +852,7 @@ async function assemble(pid: string, emit: Emit): Promise<{ projectId: string; v
   const started = Number(p.renderStartedAt || 0);
   if (started) patch.renderSeconds = Math.round(Math.max(0, Date.now() / 1000 - started) * 10) / 10;
   S.updateProject(pid, patch);
-  emit({ event: 'done', status: doneStatus, videoKey: key, scenesFailed: failed, scenesDone: doneN });
+  emit({ event: 'done', status: doneStatus, videoKey: key, scenesFailed: failed, scenesDone: doneN, costCents: costTotal() });
   return { projectId: pid, videoKey: key };
 }
 

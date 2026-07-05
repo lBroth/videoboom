@@ -10,6 +10,7 @@ import { runEngine, dataDir, EngineEvent } from '../engine';
 // the macOS dock in dev (packaged macOS gets its icon from the .app bundle automatically).
 const ICON = path.join(app.getAppPath(), 'icons', 'icon.png');
 import { settingsEnv, getSettings, setSettings, Settings } from './settings';
+import { keyStatus, setKey } from './keychain';
 import { modelStatus, downloadModel, localCapabilities, DownloadRun } from './localModels';
 import { getProject, listScenes, listProjects, listCharacters, mediaUrl } from './projects';
 
@@ -184,6 +185,10 @@ function registerIpc() {
   ipcMain.handle('settings:get', () => getSettings());
   ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => setSettings(patch));
 
+  // ── optional cloud keys (safeStorage; the app works fully with none) ──
+  ipcMain.handle('keys:status', () => keyStatus());
+  ipcMain.handle('keys:set', (_e, name: string, value: string) => { setKey(name, value); return keyStatus(); });
+
   // ── native pickers ──
   ipcMain.handle('dialog:openAudio', async () => {
     const r = await dialog.showOpenDialog(win!, {
@@ -258,9 +263,6 @@ app.whenReady().then(async () => {
     }
     return;
   }
-  // One-time cleanup: this local-only build has no API keys — remove any encrypted key blob left by the
-  // old bring-your-own-key cloud build so no secret lingers on disk.
-  try { fs.rmSync(path.join(app.getPath('userData'), 'keys.json'), { force: true }); } catch { /* nothing to clean */ }
   if (process.platform === 'darwin' && app.dock && fs.existsSync(ICON)) app.dock.setIcon(ICON);   // dock icon in dev
   registerIpc();
   createWindow();

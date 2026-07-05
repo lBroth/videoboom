@@ -39,7 +39,7 @@ export interface LocalCapabilities {
 export interface SidecarEvent {
   event: string; stage?: string; total?: number; index?: number; status?: string;
   ok?: boolean; error?: string; videoKey?: string; scenesDone?: number; scenesFailed?: number;
-  message?: string; projectId?: string; characterId?: string;
+  costCents?: number; message?: string; projectId?: string; characterId?: string;
 }
 
 export interface VBApi {
@@ -55,6 +55,8 @@ export interface VBApi {
   openExternal(url: string): Promise<void>;
   getSettings(): Promise<Settings>;
   setSettings(patch: Partial<Settings>): Promise<Settings>;
+  keysStatus(): Promise<Record<string, boolean>>;
+  setKey(name: string, value: string): Promise<Record<string, boolean>>;
   pickAudio(): Promise<string | null>;
   pickImage(): Promise<string | null>;
   createProject(o: { audio: string; name: string; style: string; cast: string; quality: string; mode: string; format?: string }): Promise<{ projectId: string }>;
