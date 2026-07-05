@@ -1,11 +1,13 @@
-// Shared pipeline-stage helpers, all on-device. This module owns the JSON schemas and the storyboard
-// prompt construction; the actual model calls delegate to the local MLX modules (localLlm / localVlm /
-// localStt / localKeyframe) which drive the resident Python sidecar. No cloud, no API keys, no network.
+// Shared pipeline-stage helpers + the per-stage dispatchers. This module owns the JSON schemas, the
+// storyboard prompt construction, and the policy constants (TOON_STYLE, MOTION, isContentBlock). Each stage
+// call delegates to backends/registry, which picks the cloud or local impl from the resolved config. The
+// signatures are unchanged so pipeline.ts's call sites are untouched.
+import * as R from './backends/registry';
 
 // ── LLM (story bible + shot list) ─────────────────────────────────────────────────
-export async function llmJson(system: string, user: string, schema: any, _model?: string, maxTokens = 4000, temperature = 0.7): Promise<any | null> {
-  const { llmJsonLocal } = await import('./localLlm');
-  return llmJsonLocal(system, user, schema, maxTokens, temperature);
+// `role` tags the call so the cloud impl picks the story-bible model vs the shot-list model; local ignores it.
+export async function llmJson(system: string, user: string, schema: any, role?: string, maxTokens = 4000, temperature = 0.7): Promise<any | null> {
+  return R.llm().llmJson(system, user, schema, role, maxTokens, temperature);
 }
 
 export const BIBLE_SCHEMA = {
@@ -78,7 +80,7 @@ export async function storyBible(lyrics: string, style: string, dur: number, cas
       'Design the video\'s STORY strictly FROM THESE LYRICS. Find the real narrative / emotional journey (even if metaphorical — translate into a concrete visual story with a faithful lead). If a CAST is given, weave those people in according to their roles (e.g. family) where the lyrics support it. Break it into ACTS following the song sections; each act = one location + one story beat that moves the lead forward + one emotion. CRITICAL: the ACTS must follow the lyrics IN ORDER — the first sung line maps to the first act, the last to the last. Never introduce a later place/life-stage/beat before the lyric that names it (e.g. if the words go nido -> scuola -> lavoro, the acts go in that same order, not work-first). The acts are a TIMELINE of the song, not a thematic summary.';
   }
   const mt = Math.min(20000, Math.max(2500, Math.trunc((dur || 150) * 35)));
-  return llmJson(system, user, BIBLE_SCHEMA, undefined, mt, 0.5);
+  return llmJson(system, user, BIBLE_SCHEMA, 'story', mt, 0.5);
 }
 
 // ── transcription (on-device whisper) ──────────────────────────────────────────────
@@ -94,8 +96,7 @@ export type STTResult = { ok: true; words: Word[] } | { ok: false; error: string
 
 export async function transcribe(audioPath: string): Promise<STTResult> {
   try {
-    const { transcribeWordsLocal } = await import('./localStt');
-    const r = await transcribeWordsLocal(audioPath);
+    const r = await R.stt().transcribeWords(audioPath);
     if (!r.ok) return { ok: false, error: r.error || 'transcription failed' };
     return { ok: true, words: r.words };
   } catch (e: any) {
@@ -108,20 +109,22 @@ export const TOON_STYLE =
   '3D animated movie still, Pixar/DreamWorks style, vibrant stylized cartoon animation, soft toon shading, expressive cartoon features, clearly animated and NOT photorealistic';
 
 export async function keyframe(prompt: string, outPath: string, refs: [string, string][] = [], toon = false): Promise<boolean> {
-  const { keyframeLocal } = await import('./localKeyframe');
-  return keyframeLocal(prompt, outPath, refs, toon);
+  return R.keyframe().keyframe(prompt, outPath, refs, toon);
+}
+
+/** Keyframe-pass concurrency for the current backend: local = GPU-serial, cloud = network-parallel. */
+export function keyframeConcurrency(): number {
+  return R.keyframe().concurrency();
 }
 
 // ── VLM (portrait caption + upload safety) ─────────────────────────────────────────
 export async function vlmCaption(imgPath: string): Promise<string> {
-  const { vlmCaptionLocal } = await import('./localVlm');
-  return vlmCaptionLocal(imgPath);
+  return R.vlm().vlmCaption(imgPath);
 }
 
-/** Safety check on an uploaded photo via the on-device VLM. Returns [safe, codes]. Fails OPEN. */
+/** Safety check on an uploaded photo. Returns [safe, codes]. Fails OPEN. */
 export async function moderateImage(path: string): Promise<[boolean, string[]]> {
-  const { moderateImageLocal } = await import('./localVlm');
-  return moderateImageLocal(path);
+  return R.vlm().moderateImage(path);
 }
 
 /** A DETERMINISTIC content/safety block (retrying the same input won't help). Transient gateway/timeout
