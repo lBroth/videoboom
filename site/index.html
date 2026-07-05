@@ -4,10 +4,10 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Videoboom — turn a song into a music video, on your machine</title>
-<meta name="description" content="Open-source desktop app that turns a song into a complete AI music video — entirely on your own machine. On-device models, no accounts, no API keys. macOS (Apple Silicon)." />
+<meta name="description" content="Open-source desktop app that turns a song into a complete AI music video. Local-default hybrid: every stage runs on-device by default, with optional bring-your-own-key cloud per stage. Private by default, no key required. macOS (Apple Silicon)." />
 <link rel="icon" href="icon.png" />
 <meta property="og:title" content="Videoboom" />
-<meta property="og:description" content="Turn a song into a music video — entirely on your own machine. Open-source, on-device, no API keys." />
+<meta property="og:description" content="Turn a song into a music video. Open-source, on-device by default, with optional cloud per stage. Private by default — no key required." />
 <meta property="og:image" content="icon.png" />
 <style>
   :root{
@@ -123,13 +123,13 @@
 
 <main>
   <div class="wrap hero">
-    <span class="pill">⭐ Open-source · <b>runs on your machine</b> · no accounts, no keys</span>
+    <span class="pill">⭐ Open-source · <b>runs on your Mac by default</b> · optional cloud per stage</span>
     <h1>Turn a song into a<br><span class="grad">complete music video</span></h1>
     <p class="sub">A desktop app that writes a story from your lyrics, designs the shots, generates the
       keyframes, animates every scene, and cuts it to the beat — with every model running <b>on your own
-      machine</b>. No accounts, no API keys, no cloud.</p>
+      Mac by default</b>. Private, no key, no cost. Add a key only to unlock cloud where you want it.</p>
     <div class="cta">
-      <a class="btn btn-grad" href="https://github.com/lBroth/videoboom/releases/latest">↓ Download for your OS</a>
+      <a class="btn btn-grad" href="https://github.com/lBroth/videoboom/releases/latest">↓ Download for macOS</a>
       <a class="btn btn-ghost" href="https://github.com/lBroth/videoboom">★ Star on GitHub</a>
     </div>
     <div class="os">macOS (Apple Silicon) — free &amp; open-source (Apache-2.0)</div>
@@ -156,7 +156,7 @@
       <div class="card"><div class="ic">🎭</div><h3>Reusable cast</h3><p>A photo and/or a description becomes a consistent character, kept recognizable across every scene.</p></div>
       <div class="card"><div class="ic">🔁</div><h3>Per-scene refresh</h3><p>Don’t like one shot? Re-roll a single scene without touching the rest of the cut.</p></div>
       <div class="card"><div class="ic">⚡</div><h3>Preview first</h3><p>Render the opening ~25% quickly, watch it, then continue to the full song.</p></div>
-      <div class="card"><div class="ic">🖥️</div><h3>On-device models</h3><p>Transcription, story, keyframes and video all run locally on Apple Silicon — private and offline.</p></div>
+      <div class="card"><div class="ic">🖥️</div><h3>Private by default · optional cloud</h3><p>Transcription, story, keyframes and video all run locally on Apple Silicon — private and offline, no key required. Bring your own key to opt any stage into cloud (OpenRouter · Kling · Replicate).</p></div>
     </div>
   </section>
 
@@ -164,17 +164,19 @@
     <div class="band">
       <div class="row">
         <div>
-          <div class="eyebrow">Runs on your machine</div>
-          <h2>No subscription. No keys. No cloud.</h2>
+          <div class="eyebrow">Runs on your Mac by default</div>
+          <h2>Private by default. Cloud when you want it.</h2>
           <p class="lead">Every model — transcription, the story LLM, keyframes and the image-to-video
-            engine — runs on-device on Apple Silicon (MLX). There's nothing to sign up for and nothing to
-            paste: your song and your video never leave your machine. The only time Videoboom touches the
-            network is to download the model weights once; after that it works offline.</p>
+            engine — runs on-device on Apple Silicon (MLX) out of the box. No subscription, no key required:
+            your song and your video never leave your machine. The only time Videoboom touches the network is
+            to download the model weights once; after that it works offline. Prefer a cloud model for a stage?
+            Bring your own key (OpenRouter · Kling · Replicate) and opt that stage in — it never switches on
+            its own.</p>
         </div>
         <div class="stats">
-          <div class="stat"><b>0</b> API keys or accounts</div>
-          <div class="stat"><b>0</b> cloud — 100% on-device</div>
-          <div class="stat"><b>100%</b> private — your files stay put</div>
+          <div class="stat"><b>0</b> keys required to start</div>
+          <div class="stat"><b>Local</b> by default · cloud optional</div>
+          <div class="stat"><b>100%</b> private until you opt in</div>
         </div>
       </div>
     </div>
@@ -184,7 +186,7 @@
     <div class="eyebrow">How it works</div>
     <h2>Drop a song. Get a video.</h2>
     <ol class="steps">
-      <li><b>Install the models.</b> <span>A one-time on-device setup downloads the models (transcription, story LLM, keyframes, video) to your Mac — no accounts, no keys.</span></li>
+      <li><b>Install the models.</b> <span>A one-time on-device setup downloads the models (transcription, story LLM, keyframes, video) to your Mac — no account needed. Or add your own key to run a stage in the cloud instead.</span></li>
       <li><b>Drop in a song</b> <span>and optionally build a cast — reusable characters from a photo or a description.</span></li>
       <li><b>It writes &amp; renders.</b> <span>Story from the lyrics → shot list → identity-preserving keyframes → per-scene clips → beat-cut assemble.</span></li>
       <li><b>Preview, refine, export.</b> <span>Watch the preview, re-roll any scene, then render the full song to an MP4 (tagged as AI-generated).</span></li>
@@ -198,7 +200,7 @@
       <a class="btn btn-grad" href="https://github.com/lBroth/videoboom/releases/latest">↓ Download Videoboom</a>
       <a class="btn btn-ghost" href="https://github.com/lBroth/videoboom">View the source</a>
     </div>
-    <div class="note">Builds are unsigned — on first launch, right-click → Open (macOS) or “More info → Run anyway” (Windows).</div>
+    <div class="note">Builds are unsigned — on first launch, right-click → Open (macOS, Apple Silicon).</div>
   </section>
 </main>
 
