@@ -97,5 +97,5 @@ test('migrate — v1 flat cloud choice does NOT become a cloud pin (I2), local c
   assert.equal(s.stages.LLM.mode, 'auto');   // cloud → auto, NOT a cloud pin
   assert.equal(s.stages.VIDEO.mode, 'auto');
   assert.equal(s.cloud.storyModel, 'x/y');   // legacy flat slug carried into nested cloud
-  assert.equal(s.localVideoModel, '14b');    // absent → default
+  assert.equal(s.localVideoModel, '5b');     // absent → default (Fast/FastWan, published + fits 32GB)
 });

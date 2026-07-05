@@ -15,8 +15,8 @@ const STAGE_REPOS: Record<string, string[]> = {
   STT: ['mlx-community/whisper-large-v3-turbo'],
   LLM: ['lmstudio-community/Qwen3.6-35B-A3B-MLX-4bit'],
   VLM: ['mlx-community/gemma-3-12b-it-4bit'],
-  KEYFRAME: ['dhairyashil/FLUX.1-schnell-mflux-4bit', 'akx/FLUX.1-Kontext-dev-mflux-4bit'],
-  VIDEO: ['Wan-AI/Wan2.2-I2V-A14B'],
+  KEYFRAME: ['dhairyashil/FLUX.1-schnell-mflux-4bit'], // schnell = render prereq; Kontext is optional (portrait)
+  VIDEO: ['pre-converted MLX, per engine'],            // readiness = per-engine marker (videoReady), not repoReady
 };
 
 // Path resolution (dev vs packaged) lives in paths.ts; this module consumes it (no duplicate resolvers).
@@ -37,7 +37,8 @@ function videoReady(): boolean {
   const is5b = getSettings().localVideoModel === '5b';
   const marker = is5b ? '.model-path-5b' : '.model-path';
   const override = is5b ? process.env.VB_LOCAL_WAN_5B_DIR : process.env.VB_LOCAL_WAN_DIR;
-  const sentinel = is5b ? 'config.json' : 't5_encoder.safetensors';
+  // Both shipped repos carry a real t5_encoder written with the model, so its presence = a complete download.
+  const sentinel = 't5_encoder.safetensors';
   try {
     const dir = (override || fs.readFileSync(path.join(markerDir(), marker), 'utf8')).trim();
     return Boolean(dir) && fs.existsSync(path.join(dir, sentinel));

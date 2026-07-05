@@ -465,7 +465,7 @@ const STAGE_ROWS: { id: Stage; label: string; provider: 'openrouter' | 'replicat
   { id: 'STT', label: 'Lyric timing', provider: 'replicate', model: 'whisper · mlx', size: '~1.6 GB' },
   { id: 'LLM', label: 'Story & shot-list', provider: 'openrouter', model: 'Qwen3 · mlx-lm', size: '~19 GB' },
   { id: 'VLM', label: 'Face caption + safety', provider: 'openrouter', model: 'gemma-3 · mlx-vlm', size: '~8 GB' },
-  { id: 'KEYFRAME', label: 'Keyframe images', provider: 'openrouter', model: 'FLUX · mflux', size: '~15 GB' },
+  { id: 'KEYFRAME', label: 'Keyframe images', provider: 'openrouter', model: 'FLUX · mflux', size: '~9.6 GB' },
   { id: 'VIDEO', label: 'Video (image→video)', provider: 'openrouter', model: 'Wan 2.2 · mlx-video', size: '~54 GB' },
 ];
 

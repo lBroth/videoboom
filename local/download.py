@@ -17,13 +17,26 @@ import threading
 import time
 
 # One source of truth for stage -> HF repos (mirrored read-only by src/main/localModels.ts for status).
-# VIDEO lists the Wan-AI source checkpoint; it is snapshot-downloaded AND converted (see download_video).
+# KEYFRAME is FLUX-schnell only (the render prerequisite); FLUX-Kontext is optional (portrait/reference).
+# VIDEO is NOT a plain repo list — it's a PRE-CONVERTED MLX repo picked per engine (see VIDEO_ENGINES /
+# download_video); readiness is the per-engine marker, not a raw cache check.
 STAGE_REPOS = {
     "STT": ["mlx-community/whisper-large-v3-turbo"],
     "LLM": ["lmstudio-community/Qwen3.6-35B-A3B-MLX-4bit"],
     "VLM": ["mlx-community/gemma-3-12b-it-4bit"],
-    "KEYFRAME": ["dhairyashil/FLUX.1-schnell-mflux-4bit", "akx/FLUX.1-Kontext-dev-mflux-4bit"],
-    "VIDEO": ["Wan-AI/Wan2.2-I2V-A14B"],
+    "KEYFRAME": ["dhairyashil/FLUX.1-schnell-mflux-4bit"],
+}
+# Optional, on-demand (not a render prerequisite): FLUX-Kontext for cast/reference-driven keyframes.
+OPTIONAL_REPOS = {
+    "KEYFRAME_KONTEXT": ["akx/FLUX.1-Kontext-dev-mflux-4bit"],
+}
+# Pre-converted MLX video engines, picked by settings.localVideoModel. No source download, no on-device
+# convert — a plain snapshot of a ready-to-run MLX repo + a per-engine marker.
+VIDEO_ENGINES = {
+    # Fast: FastWan-5B DMD 3-step (published self-contained, ~24GB, fits 32GB unified).
+    "5b": {"repo": "lBroth/FastWan2.2-TI2V-5B-MLX", "name": "FastWan2.2-TI2V-5B-MLX", "marker": ".model-path-5b", "lightning": False},
+    # Quality: Wan-14B MLX Q8 (~43GB, needs 48GB+). Load-test through mlx-video before default (see plan §10).
+    "14b": {"repo": "Anes1032/Wan2.2-I2V-A14B-mlx-q8", "name": "Wan2.2-I2V-A14B-MLX-Q8", "marker": ".model-path", "lightning": True},
 }
 
 
@@ -32,61 +45,46 @@ def emit(obj: dict) -> None:
 
 
 def download_video() -> None:
-    """Wan 2.2 I2V-A14B: snapshot the fp32 checkpoint, convert to a quantized MLX model, fetch the Lightning
-    4-step LoRA, and record the marker the app reads (local/.model-path). Mirrors local/setup.sh in Python so
-    the in-app Download button provisions the video stage. Heavy: ~120GB source, ~18GB MLX output."""
+    """Provision the video stage by snapshotting a PRE-CONVERTED MLX repo (no 120GB fp32 source, no on-device
+    convert, no torch) picked by settings.localVideoModel — '5b' Fast (FastWan) / '14b' Quality (Wan Q8) — and
+    writing the per-engine marker the app reads. 14b also fetches the Lightning 4-step LoRA (else it falls back
+    to the ~38 min/clip 40-step path)."""
     from huggingface_hub import snapshot_download
 
     here = os.path.dirname(os.path.abspath(__file__))
     models_dir = os.environ.get("VB_LOCAL_MODELS_DIR", os.path.join(here, "models"))
     # Markers go in the WRITABLE marker dir (userData when packaged; the code dir is read-only there).
     marker_dir = os.environ.get("VB_LOCAL_MARKER_DIR", here)
-    bits = os.environ.get("VB_LOCAL_BITS", "4")
     os.makedirs(models_dir, exist_ok=True)
     os.makedirs(marker_dir, exist_ok=True)
-    src = os.path.join(models_dir, "Wan2.2-I2V-A14B")
-    mlx = os.path.join(models_dir, f"Wan2.2-I2V-A14B-MLX-Q{bits}")
-    marker = os.path.join(marker_dir, ".model-path")
 
-    def record(path: str) -> None:
-        with open(marker, "w") as fh:
-            fh.write(path)
+    engine = os.environ.get("VB_LOCAL_VIDEO_MODEL", "5b")
+    spec = VIDEO_ENGINES.get(engine, VIDEO_ENGINES["5b"])
+    dest = os.path.join(models_dir, spec["name"])
+    marker = os.path.join(marker_dir, spec["marker"])
+    sentinel = os.path.join(dest, "t5_encoder.safetensors")  # written with the model → complete
 
-    # A finished conversion has the T5 encoder (written last) + config — gate on it so a crashed partial
-    # convert re-runs instead of being trusted.
-    if os.path.exists(os.path.join(mlx, "t5_encoder.safetensors")) and os.path.exists(os.path.join(mlx, "config.json")):
-        record(mlx)
-        emit({"event": "done", "pct": 100})
-        return
+    if not (os.path.exists(sentinel) and os.path.exists(os.path.join(dest, "config.json"))):
+        emit({"event": "progress", "pct": 1, "repo": spec["repo"]})
+        snapshot_download(spec["repo"], local_dir=dest)
+    with open(marker, "w") as fh:
+        fh.write(dest)
 
-    if not (os.path.isdir(src) and os.path.exists(os.path.join(src, "config.json"))):
-        emit({"event": "progress", "pct": 1, "repo": "Wan-AI/Wan2.2-I2V-A14B"})
-        snapshot_download("Wan-AI/Wan2.2-I2V-A14B", local_dir=src)
+    # Wan2.2-Lightning 4-step I2V LoRA — 14B only (the fast path: 4 steps + CFG off instead of 40 steps).
+    if spec["lightning"]:
+        light_dir = os.path.join(models_dir, "Wan2.2-Lightning")
+        light_lora = os.path.join(light_dir, "Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1")
+        if not os.path.exists(os.path.join(light_lora, "high_noise_model.safetensors")):
+            emit({"event": "progress", "pct": 92, "repo": "lightx2v/Wan2.2-Lightning"})
+            snapshot_download(
+                "lightx2v/Wan2.2-Lightning",
+                allow_patterns=["Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/*"],
+                local_dir=light_dir,
+            )
+        if os.path.exists(os.path.join(light_lora, "high_noise_model.safetensors")):
+            with open(os.path.join(marker_dir, ".lightning-dir"), "w") as fh:
+                fh.write(light_lora)
 
-    emit({"event": "progress", "pct": 60, "repo": "converting -> MLX Q%s" % bits})
-    shutil.rmtree(mlx, ignore_errors=True)  # never trust a partial conversion — redo cleanly
-    subprocess.run(
-        [sys.executable, "-m", "mlx_video.models.wan_2.convert",
-         "--checkpoint-dir", src, "--output-dir", mlx,
-         "--quantize", "--bits", str(bits), "--group-size", "64"],
-        check=True,
-    )
-
-    # Wan2.2-Lightning 4-step I2V LoRA (the fast path: 4 steps + CFG off instead of 40 steps).
-    light_dir = os.path.join(models_dir, "Wan2.2-Lightning")
-    light_lora = os.path.join(light_dir, "Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1")
-    if not os.path.exists(os.path.join(light_lora, "high_noise_model.safetensors")):
-        emit({"event": "progress", "pct": 92, "repo": "lightx2v/Wan2.2-Lightning"})
-        snapshot_download(
-            "lightx2v/Wan2.2-Lightning",
-            allow_patterns=["Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/*"],
-            local_dir=light_dir,
-        )
-    if os.path.exists(os.path.join(light_lora, "high_noise_model.safetensors")):
-        with open(os.path.join(marker_dir, ".lightning-dir"), "w") as fh:
-            fh.write(light_lora)
-
-    record(mlx)
     emit({"event": "done", "pct": 100})
 
 
