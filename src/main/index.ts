@@ -15,6 +15,7 @@ import { resolveConfig, type KeyState } from './autoconfig';
 import { localEnv } from './paths';
 import { CLOUD_HOSTS, hostAllowed } from '../shared/netAllowlist';
 import { modelStatus, downloadModel, localCapabilities, engineState, DownloadRun } from './localModels';
+import { detect as detectBootstrap, install as installBootstrap, cancelBootstrap } from './bootstrap';
 import { getProject, listScenes, listProjects, listCharacters, mediaUrl } from './projects';
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5273';
@@ -135,6 +136,7 @@ function streamOp(opId: string, command: string, args: string[], extraEnv?: Reco
 }
 const RUNS = new Map<string, ReturnType<typeof runEngine>>();
 const DOWNLOADS = new Map<string, DownloadRun>();
+const BOOTSTRAP = new Set<string>(); // non-empty while the on-device engine is being provisioned
 // Ops currently holding the on-device GPU (see streamOp `usesGpu`). An all-cloud render/portrait is NOT here,
 // so it neither blocks nor is blocked by the GPU lock.
 const GPU_OPS = new Set<string>();
@@ -174,6 +176,7 @@ function portraitNeedsGpu(): boolean {
  * blocked with the specific missing-key / opt-in nudge — never silently sent to cloud (I3). */
 function guardRender(pid: string): Promise<never> | null {
   const opId = `render:${pid}`;
+  if (BOOTSTRAP.size) return refuse(opId, 'The on-device engine is installing — wait for it to finish, then render.');
   if (DOWNLOADS.size) return refuse(opId, 'A model download is in progress — wait for it to finish, then render.');
   const resolved = resolvedConfig();
   const st = modelStatus();
@@ -204,6 +207,7 @@ function guardRender(pid: string): Promise<never> | null {
  * GPU op runs. A cloud-keyframe portrait can run alongside a local render. */
 function guardPortrait(cid: string): Promise<never> | null {
   const opId = `portrait:${cid}`;
+  if (BOOTSTRAP.size) return refuse(opId, 'The on-device engine is installing — wait for it to finish.');
   if (DOWNLOADS.size) return refuse(opId, 'A model download is in progress — wait for it to finish.');
   if (portraitNeedsGpu() && gpuBusy()) return refuse(opId, 'A generation is already running — wait for it to finish, then try again.');
   return null;
@@ -308,6 +312,14 @@ function registerIpc() {
   // ── on-device model availability + downloads (renderer subscribes to download:<STAGE>) ──
   ipcMain.handle('local:capabilities', () => localCapabilities());
   ipcMain.handle('engine:state', () => engineState(resolvedConfig().stages));
+  // On-device engine bootstrap (first-run Python/venv/deps provision). Renderer subscribes to `bootstrap`.
+  ipcMain.handle('bootstrap:status', () => ({ ...detectBootstrap(), caps: localCapabilities() }));
+  ipcMain.handle('bootstrap:start', () => {
+    if (BOOTSTRAP.size) return Promise.reject(new Error('The on-device engine is already installing.'));
+    BOOTSTRAP.add('engine');
+    return installBootstrap((ev) => win?.webContents.send('bootstrap', ev)).finally(() => BOOTSTRAP.delete('engine'));
+  });
+  ipcMain.handle('bootstrap:cancel', () => { BOOTSTRAP.delete('engine'); return cancelBootstrap(); });
   ipcMain.handle('models:status', () => modelStatus());
   ipcMain.handle('models:download', (_e, stage: string) => {
     if (DOWNLOADS.has(stage)) return DOWNLOADS.get(stage)!.done; // already downloading — join it

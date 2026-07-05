@@ -74,6 +74,10 @@ export interface VBApi {
   cancel(opId: string): Promise<boolean>;
   localCapabilities(): Promise<LocalCapabilities>;
   engineState(): Promise<'unsupported' | 'not-bootstrapped' | 'partial' | 'ready'>;
+  bootstrapStatus(): Promise<{ pythonReady: boolean; venvReady: boolean; depsReady: boolean; caps: LocalCapabilities }>;
+  startBootstrap(): Promise<void>;
+  cancelBootstrap(): Promise<boolean>;
+  onBootstrap(cb: (e: { event: string; phase?: string; pct?: number; error?: string }) => void): () => void;
   modelsStatus(): Promise<Record<string, 'ready' | 'absent'>>;
   downloadModel(stage: string): Promise<void>;
   cancelDownload(stage: string): Promise<boolean>;

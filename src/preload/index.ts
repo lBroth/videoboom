@@ -35,6 +35,10 @@ export interface VBApi {
   // on-device models: capability gate + availability + download (with progress on `download:<STAGE>`)
   localCapabilities(): Promise<any>;
   engineState(): Promise<'unsupported' | 'not-bootstrapped' | 'partial' | 'ready'>;
+  bootstrapStatus(): Promise<{ pythonReady: boolean; venvReady: boolean; depsReady: boolean; caps: any }>;
+  startBootstrap(): Promise<void>;
+  cancelBootstrap(): Promise<boolean>;
+  onBootstrap(cb: (e: any) => void): () => void;
   modelsStatus(): Promise<Record<string, 'ready' | 'absent'>>;
   downloadModel(stage: string): Promise<void>;
   cancelDownload(stage: string): Promise<boolean>;
@@ -83,6 +87,15 @@ const api: VBApi = {
     const handler = (_e: IpcRendererEvent, payload: any) => cb(payload);
     ipcRenderer.on(ch, handler);
     return () => ipcRenderer.removeListener(ch, handler);
+  },
+
+  bootstrapStatus: () => ipcRenderer.invoke('bootstrap:status'),
+  startBootstrap: () => ipcRenderer.invoke('bootstrap:start'),
+  cancelBootstrap: () => ipcRenderer.invoke('bootstrap:cancel'),
+  onBootstrap: (cb) => {
+    const handler = (_e: IpcRendererEvent, payload: any) => cb(payload);
+    ipcRenderer.on('bootstrap', handler);
+    return () => ipcRenderer.removeListener('bootstrap', handler);
   },
 
   on: (opId, cb) => {
