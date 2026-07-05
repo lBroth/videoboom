@@ -1,12 +1,14 @@
 # Videoboom LOCAL_PLAN
 
-Status: FINAL architecture plan, 2026-07-04. Base: branch `bf16-relay` (clean). Owner: lead architect. This document supersedes the four draft design sections (A: hardware/auto-config, B: model manager/ETA, C: backend, D: cloud removal); all verifier blockers and majors are resolved in the text below or carried as open questions in §13.
+Status: FINAL architecture plan, 2026-07-04 (framing updated 2026-07-05: local-only → **local-default hybrid**). Base: branch `bf16-relay` (clean). Owner: lead architect. This document supersedes the four draft design sections (A: hardware/auto-config, B: model manager/ETA, C: backend, D: cloud removal); all verifier blockers and majors are resolved in the text below or carried as open questions in §13.
+
+> **Scope update — hybrid pivot.** The product is no longer local-only: cloud inference (OpenRouter LLM/VLM/keyframe/moderation, Kling video, Replicate WhisperX) is re-added as a **per-stage, opt-in** backend behind the same clean interface, restored from git `5125093~1`. **Local stays the default** (no data leaves the machine unless the user opts a stage into cloud; no key ⇒ always local). The dual-backend interface, resolver, settings v3, and cloud restoration are specified in **`DUAL_BACKEND_PLAN.md`** — read it alongside this file. Everything below (tiers, model catalog, ETA, cross-platform MLX+CUDA, packaging) still governs the **local path** unchanged; only the "local-only / no cloud ever" framing in §0, §1, and §3.4 is superseded by the hybrid policy.
 
 ---
 
 ## 0. Executive summary
 
-Videoboom pivots from "desktop BYOK cloud app with an optional macOS-only local pipeline" to a **local-only, cross-platform AI music-video studio**. All cloud inference (OpenRouter/Replicate/Kling clients, API keys, keychain, cost tracking) is deleted. Inference runs on-device on three platforms: **macOS Apple Silicon via the existing MLX sidecar** (kept, refactored) and **Windows/Linux NVIDIA via a new CUDA backend that drives a headless ComfyUI + llama-server behind the same sidecar HTTP contract**. Network is used only for user-consented provisioning (model downloads, first-run runtime install, optional catalog refresh) — **never at inference time**, enforced by `HF_HUB_OFFLINE=1`, an Electron session firewall, and a CI tripwire keyed to an explicit allowlist module.
+Videoboom is a **local-default, cross-platform AI music-video studio** with an **opt-in cloud path per stage** (see `DUAL_BACKEND_PLAN.md`). The local path — the subject of this document — runs inference on-device on three platforms: **macOS Apple Silicon via the existing MLX sidecar** (kept, refactored) and **Windows/Linux NVIDIA via a new CUDA backend that drives a headless ComfyUI + llama-server behind the same sidecar HTTP contract**. The cloud path (OpenRouter/Replicate/Kling clients, API keys, keychain, cost tracking) is restored from git `5125093~1` behind the same per-stage interface and is used **only where the user explicitly opted a stage into cloud**; with no key present every stage is local. Network is used only for (a) user-consented provisioning (model downloads, first-run runtime install, optional catalog refresh) and (b) opted-in cloud stages talking to their own provider host — **local stages touch the network at inference time only when the user opted them into cloud**, enforced by `HF_HUB_OFFLINE=1` on local inference children, a per-stage Electron session firewall, and a CI tripwire keyed to an explicit allowlist module (§3.4).
 
 On first run the app detects OS/GPU/VRAM/RAM/disk in pure TypeScript (before any Python exists), classifies the machine into a tier (M16…M64 Apple, N8…N32 NVIDIA), and auto-selects models, quants, resolution, steps, and offload settings for every stage. A new **Models tab** lets users browse a pinned, sha256-verified model catalog per stage, download/pause/resume/delete variants with size-on-disk, and see a **live ETA per 1 minute of finished video on this machine** — seeded from a lookup table, calibrated by an on-device three-point micro-benchmark, refined by real render timings.
 
@@ -19,7 +21,8 @@ End state: one settings schema (v3), one `DeviceProfile` file, one sidecar API (
 ## 1. Goals / non-goals
 
 **Goals**
-1. Local-only: zero network inference; network only for model/runtime downloads and (opt-in) catalog refresh.
+1. Local-default: every stage runs on-device by default; a stage touches the network at inference time **only** when the user explicitly opts it into cloud (per-stage BYOK — see `DUAL_BACKEND_PLAN.md`). No key present ⇒ zero inference network. Provisioning network (model/runtime downloads, opt-in catalog refresh) is unchanged.
+1b. Hybrid dual-backend: each stage (STT/LLM/VLM/keyframe/video) has a local **and** an opt-in cloud impl (OpenRouter/Kling/Replicate, restored from `5125093~1`) behind one clean interface + resolver; cloud is never a silent fallback (hardware tier never enables cloud).
 2. Cross-platform inference: Windows + Linux with NVIDIA CUDA (driver ≥ 570, VRAM ≥ 8 GB, compute cap ≥ 8.6), macOS Apple Silicon (MLX/Metal, ≥ 32 GB unified supported; 16–31 GB experimental).
 3. Hardware auto-configuration: tier detection on first run and on demand; user never needs to know what a quant is.
 4. Model Manager UI: per-stage model/quant browse, verified resumable downloads, delete with refcounted shared deps, real-time per-machine ETA per minute of final video.
@@ -28,7 +31,7 @@ End state: one settings schema (v3), one `DeviceProfile` file, one sidecar API (
 **Non-goals**
 - AMD/Intel GPUs, Intel Macs, CPU-only: graceful "unsupported" screen only.
 - Lip-sync (deferred, unchanged).
-- Cloud fallback of any kind. No telemetry, no auto-update (out of scope; if ever added it goes through the network allowlist as a reviewed act).
+- *Automatic/silent* cloud fallback: cloud is opt-in per stage only; the resolver never routes a stage to cloud without an explicit user pin or `prefer-cloud` master **and** a present key, and hardware tier never enables cloud (invariant I3, `DUAL_BACKEND_PLAN.md` §0/§3). (Opt-in cloud BYOK itself is now a supported goal, not a non-goal.) No telemetry, no auto-update (out of scope; if ever added it goes through the network allowlist as a reviewed act).
 - Multi-GPU scheduling (we pick the largest GPU; `mapPool` survives for the future).
 
 ---
@@ -175,11 +178,12 @@ Contract:
 | Model downloads | `huggingface.co`, `cdn-lfs*.huggingface.co`, `*.hf.co` (+ `settings.hfEndpoint` mirror, e.g. `hf-mirror.com`) | `local/serve/downloader.py` child only |
 | Runtime bootstrap | `pypi.org`, `files.pythonhosted.org`, `download.pytorch.org`, `github.com`, `objects.githubusercontent.com`, `codeload.github.com`, `astral.sh` (uv python-build-standalone), `huggingface.co`/`cdn-lfs*.huggingface.co`/`*.hf.co` (videoboom-assets runtime mirrors: ComfyUI trio, llama-server — fixes the §3.2-vs-allowlist omission) | `src/main/bootstrap.ts` children only |
 | Catalog refresh (**opt-in**, fetched only when the user opens the Models tab AND enabled a "check for new models" toggle, default **off**) | `raw.githubusercontent.com` | `src/main/models/catalog.ts` |
-| Inference | `127.0.0.1:<ephemeral>` only | everything else |
+| Inference — local stages | `127.0.0.1:<ephemeral>` only | local inference children (default) |
+| Inference — cloud stages (**opt-in per stage**) | `openrouter.ai` (LLM/VLM/keyframe/moderation/Kling video); `api.replicate.com`, `replicate.delivery`, `*.replicate.delivery` (WhisperX) — see `src/shared/netAllowlist.ts` `CLOUD_HOSTS` | in-process cloud dispatcher (`src/engine/cloud/**`), **only** when that stage resolved cloud **and** its provider key is present |
 | Dev | `http://localhost:5273` **and `ws://localhost:5273`** (Vite HMR) when `!app.isPackaged` | renderer |
 
-- Invariant (replaces D's false "two hosts remain"): **no process may touch the network during inference**; provisioning is user-consented and confined to the two designated online process classes. Inference children get `HF_HUB_OFFLINE=1, TRANSFORMERS_OFFLINE=1, DO_NOT_TRACK=1, HF_HUB_DISABLE_TELEMETRY=1`; downloader/bootstrap children are spawned **without** the offline vars.
-- `scripts/check-no-cloud.sh` greps `https?://` in `src/ renderer/ local/` minus loopback, with a **path-keyed allowlist**: `src/main/bootstrap.ts`, `src/main/models/catalog.ts`, `local/serve/downloader.py`, `src/shared/netAllowlist.ts` (not the legacy `local/download.py` filename).
+- Invariant (**hybrid, updated 2026-07-05**): **local stages touch zero network at inference time; cloud stages talk only to their own provider host (per-provider allowlist above), and only when the user opted that stage into cloud AND its key is present; no key ⇒ zero inference network.** Provisioning is user-consented and confined to the designated online process classes. **Local** inference children get `HF_HUB_OFFLINE=1, TRANSFORMERS_OFFLINE=1, DO_NOT_TRACK=1, HF_HUB_DISABLE_TELEMETRY=1`; the **cloud** dispatcher runs in-process (main / `src/engine/cloud/http.ts`), never a child, and is never given those offline vars; downloader/bootstrap children are spawned **without** the offline vars. Enforcement: the session firewall allows a `CLOUD_HOSTS[provider]` host only if `keyStatus()[provider]` is true and at least one stage resolved to that provider's cloud backend (`DUAL_BACKEND_PLAN.md` §6).
+- `scripts/check-no-cloud.sh` greps `https?://` in `src/ renderer/ local/` minus loopback, with a **path-keyed allowlist**: `src/main/bootstrap.ts`, `src/main/models/catalog.ts`, `local/serve/downloader.py`, `src/shared/netAllowlist.ts`, and (hybrid, 2026-07-05) the restored cloud files `src/engine/cloud/**`, `src/engine/cost.ts`, `src/main/keychain.ts` — every provider URL lives only there; the script now **inverts** (asserts no URL appears outside the allowlist, and that every host in `cloud/**` is present in `netAllowlist.ts`) rather than banning all URLs (not the legacy `local/download.py` filename).
 - **Google Fonts removal** (missed by draft D): `renderer/index.css:1` imports Inter from `fonts.googleapis.com` and `renderer/index.html:8`'s CSP allows it. M1-C6 bundles the Inter woff2 files under `renderer/fonts/` with `@font-face` and strips the Google hosts from the CSP — before the tripwire is enabled, or CI is red on day one.
 
 ---
