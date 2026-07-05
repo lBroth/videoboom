@@ -5,7 +5,7 @@
 <h1 align="center">Videoboom</h1>
 
 <p align="center">
-  <b>Turn a song into a complete music video — on your own machine, with your own API keys.</b>
+  <b>Turn a song into a complete music video — entirely on your own machine.</b>
 </p>
 
 <p align="center">
@@ -30,13 +30,14 @@ Videoboom is an open-source desktop app. Drop in a song, optionally add a cast (
 characters built from a photo or a description), and it writes a story from the lyrics, designs the
 shots, generates keyframes, animates each scene, and cuts the final video to the beat.
 
-It's **bring-your-own-key (BYOK)**: you paste your own OpenRouter / Replicate keys, the app calls those
-providers directly, and you pay them at cost. No accounts, no subscription, no markup — nothing leaves
-your machine except the generation calls you pay for.
+Everything runs **on-device**: the models (transcription, story LLM, keyframes, image-to-video) all run
+locally on Apple Silicon via MLX. **No accounts, no API keys, no subscription, no cloud** — the only time
+Videoboom touches the network is to download the model weights once. Your song and your video never leave
+your machine.
 
-> **Why BYOK?** Cloud video generation is genuinely expensive (~€25–30 of provider cost per finished
-> minute). A hosted service has to mark that up to survive, which makes it absurd for casual use. BYOK
-> removes the middleman: you see exactly what each render costs and decide.
+> **Why on-device?** Cloud video generation is expensive and sends your song to someone else's servers.
+> Running the models locally means it's private, it's free to run, and it works offline once the models
+> are downloaded. It needs a capable Mac (see requirements below).
 
 ```
 song ─▶ transcribe (forced-aligned) ─▶ story from the lyrics ─▶ shot list
@@ -49,52 +50,53 @@ song ─▶ transcribe (forced-aligned) ─▶ story from the lyrics ─▶ shot
   singing with no cumulative drift.
 - **Reusable cast** — a photo and/or a description becomes a consistent character reused across scenes.
 - **Per-scene refresh** — re-roll a single scene without touching the rest of the cut.
-- **Preview first** — render the opening ~25% cheaply, then continue to the full song.
-- **Your models** — swap the LLM / image / video models in Settings (e.g. a cheaper i2v model).
+- **Preview first** — render the opening ~25% quickly, then continue to the full song.
+- **On-device models** — transcription, story, keyframes and video all run locally (Apple Silicon / MLX).
 - AI-generated output is tagged as such in the file metadata.
+
+## Requirements
+On-device generation needs an **Apple Silicon Mac (M-series)** with **32GB+ unified memory** (48GB
+recommended — the Wan video model peaks around 24GB). The app checks this and gates the models accordingly.
 
 ## Install (run from source)
 ```bash
-# repo root — Node only, no Python. ffmpeg ships bundled (ffmpeg-static).
+# repo root — the Electron app (Node); ffmpeg ships bundled (ffmpeg-static).
 npm install
 npm run dev
+
+# one-time: install the on-device model sidecar (Python venv + MLX) and download/convert the Wan video model
+bash local/setup.sh
 ```
-In **Settings**, add your keys, then **Create** a video:
-
-| Key | Needed | Used for |
-|-----|--------|----------|
-| **OpenRouter** (`VB_OPENROUTER_API_KEY`) | **required** | story + shot list (LLM), keyframes, image-to-video, moderation |
-| **Replicate** (`REPLICATE_API_TOKEN`) | **required** | forced-aligned lyric timing (WhisperX) — reads the song's words + locks scenes to the singing |
-
-Both keys are needed; keys are encrypted with your OS keychain and never leave the machine.
+The remaining stage models (STT / LLM / VLM / keyframes) download from **Settings → On-device → Download**.
+Once every required stage shows *Ready*, **Create** a video — no keys, nothing to paste.
 
 ## Packaged builds (no install for end users)
-`npm run dist` bundles ffmpeg into a native installer for the OS you run it on. The render engine is pure
-TypeScript (no Python, no PyInstaller); the only per-OS piece is the bundled ffmpeg binary, downloaded by
-`npm install`, so each OS is built on its own machine (or a CI runner):
+`npm run dist` bundles ffmpeg into a native macOS installer. The Electron app orchestrates the render;
+on-device generation uses the Python MLX sidecar installed once by `bash local/setup.sh` (a user-owned
+venv, not bundled into the installer).
 
-| OS      | Output (`release/`)                         |
-|---------|---------------------------------------------|
-| Windows | `Setup .exe` (installer) + portable `.exe`  |
-| macOS   | `.dmg`                                       |
-| Linux   | `.AppImage` (click-to-run) + `.deb`         |
+| OS      | Output (`release/`) |
+|---------|---------------------|
+| macOS   | `.dmg`              |
 
 ## Repository layout
 ```
-src/main/      Electron main — window, IPC, runs the engine, OS-keychain key storage
+src/main/      Electron main — window, IPC, runs the engine, on-device model settings + downloads
 src/preload/   contextBridge — exposes window.vb (the only surface the renderer can touch)
 src/engine/    TypeScript render engine — transcribe ▸ story ▸ shot list ▸ keyframes ▸ i2v ▸ assemble
+               (stages.ts wraps the on-device local*.ts modules)
+local/         Python MLX sidecar (server.py) + setup/download scripts for the on-device models
 renderer/      React UI (Create / Videos / Cast / Settings), wired to window.vb
 icons/         app icon
-docs/          ARCHITECTURE · FOLDER-STRUCTURE · PROVIDERS · ROADMAP (+ research/)
+docs/          ARCHITECTURE · FOLDER-STRUCTURE · MODELS · LOCAL-MODELS · ROADMAP (+ research/)
 ```
 
 ## How it works
-The engine runs in-process in the Electron main process: per operation it streams progress events to the
-UI, with your keys + model choices injected from the keychain. Generation is your own cloud API calls
-(OpenRouter + Replicate); ffmpeg (bundled) does the cutting. Projects (state + media) are plain files
-under the app's data directory.
+The TypeScript engine runs in-process in the Electron main process: per operation it streams progress
+events to the UI. Each generation stage calls the on-device MLX models through the resident Python sidecar
+(`local/server.py`); ffmpeg (bundled) does the cutting. Projects (state + media) are plain files under the
+app's data directory. Nothing leaves the machine.
 
 ## License
-Apache-2.0 — see [LICENSE](LICENSE). Videoboom only orchestrates third-party model APIs; you are
-responsible for complying with each provider's terms and for the content you generate.
+Apache-2.0 — see [LICENSE](LICENSE). You are responsible for the content you generate and for complying
+with the licenses of the on-device models you download.

@@ -4,10 +4,10 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Videoboom — turn a song into a music video, on your machine</title>
-<meta name="description" content="Open-source, bring-your-own-key desktop app that turns a song into a complete AI music video. Your keys, your machine, at cost. Windows, macOS, Linux." />
+<meta name="description" content="Open-source desktop app that turns a song into a complete AI music video — entirely on your own machine. On-device models, no accounts, no API keys. macOS (Apple Silicon)." />
 <link rel="icon" href="icon.png" />
 <meta property="og:title" content="Videoboom" />
-<meta property="og:description" content="Turn a song into a music video — on your machine, with your own API keys. Open-source, BYOK." />
+<meta property="og:description" content="Turn a song into a music video — entirely on your own machine. Open-source, on-device, no API keys." />
 <meta property="og:image" content="icon.png" />
 <style>
   :root{
@@ -81,7 +81,7 @@
   .card h3{margin:0 0 6px;font-size:17px}
   .card p{margin:0;color:var(--mut);font-size:14.5px}
 
-  /* byok band */
+  /* on-device band */
   .band{border:1px solid var(--line);border-radius:20px;padding:34px;background:
     radial-gradient(700px 300px at 100% 0,rgba(255,77,184,.10),transparent 60%),
     linear-gradient(180deg,var(--card),var(--bg2));margin-top:8px}
@@ -123,16 +123,16 @@
 
 <main>
   <div class="wrap hero">
-    <span class="pill">⭐ Open-source · <b>bring your own key</b> · no accounts</span>
+    <span class="pill">⭐ Open-source · <b>runs on your machine</b> · no accounts, no keys</span>
     <h1>Turn a song into a<br><span class="grad">complete music video</span></h1>
     <p class="sub">A desktop app that writes a story from your lyrics, designs the shots, generates the
-      keyframes, animates every scene, and cuts it to the beat — all on your machine, paid at cost with
-      your own API keys.</p>
+      keyframes, animates every scene, and cuts it to the beat — with every model running <b>on your own
+      machine</b>. No accounts, no API keys, no cloud.</p>
     <div class="cta">
       <a class="btn btn-grad" href="https://github.com/lBroth/videoboom/releases/latest">↓ Download for your OS</a>
       <a class="btn btn-ghost" href="https://github.com/lBroth/videoboom">★ Star on GitHub</a>
     </div>
-    <div class="os">Windows · macOS · Linux — free &amp; open-source (Apache-2.0)</div>
+    <div class="os">macOS (Apple Silicon) — free &amp; open-source (Apache-2.0)</div>
 
     <div class="pipe" aria-label="pipeline">
       <span class="node">🎵 song</span><span class="arrow">→</span>
@@ -155,8 +155,8 @@
       <div class="card"><div class="ic">🎯</div><h3>Vocal-aligned editing</h3><p>Forced-aligned transcription + a frame-grid retime, so every cut locks to the singing with no drift.</p></div>
       <div class="card"><div class="ic">🎭</div><h3>Reusable cast</h3><p>A photo and/or a description becomes a consistent character, kept recognizable across every scene.</p></div>
       <div class="card"><div class="ic">🔁</div><h3>Per-scene refresh</h3><p>Don’t like one shot? Re-roll a single scene without touching the rest of the cut.</p></div>
-      <div class="card"><div class="ic">⚡</div><h3>Preview first</h3><p>Render the opening ~25% cheaply, watch it, then continue to the full song.</p></div>
-      <div class="card"><div class="ic">🎚️</div><h3>Your models</h3><p>Swap the LLM / image / video models in Settings — pick a cheaper engine whenever you want.</p></div>
+      <div class="card"><div class="ic">⚡</div><h3>Preview first</h3><p>Render the opening ~25% quickly, watch it, then continue to the full song.</p></div>
+      <div class="card"><div class="ic">🖥️</div><h3>On-device models</h3><p>Transcription, story, keyframes and video all run locally on Apple Silicon — private and offline.</p></div>
     </div>
   </section>
 
@@ -164,17 +164,17 @@
     <div class="band">
       <div class="row">
         <div>
-          <div class="eyebrow">Bring your own key</div>
-          <h2>No subscription. No markup.</h2>
-          <p class="lead">Cloud video generation genuinely costs ~€25–30 of provider cost per finished
-            minute. A hosted service has to mark that up. Videoboom removes the middleman: paste your own
-            OpenRouter / Replicate keys, the app calls those providers directly, and you see exactly what
-            each render costs. Keys are encrypted with your OS keychain and never leave your machine.</p>
+          <div class="eyebrow">Runs on your machine</div>
+          <h2>No subscription. No keys. No cloud.</h2>
+          <p class="lead">Every model — transcription, the story LLM, keyframes and the image-to-video
+            engine — runs on-device on Apple Silicon (MLX). There's nothing to sign up for and nothing to
+            paste: your song and your video never leave your machine. The only time Videoboom touches the
+            network is to download the model weights once; after that it works offline.</p>
         </div>
         <div class="stats">
-          <div class="stat"><b>0%</b> markup — paid at cost</div>
-          <div class="stat"><b>0</b> accounts or servers</div>
-          <div class="stat"><b>100%</b> local — your files stay put</div>
+          <div class="stat"><b>0</b> API keys or accounts</div>
+          <div class="stat"><b>0</b> cloud — 100% on-device</div>
+          <div class="stat"><b>100%</b> private — your files stay put</div>
         </div>
       </div>
     </div>
@@ -184,7 +184,7 @@
     <div class="eyebrow">How it works</div>
     <h2>Drop a song. Get a video.</h2>
     <ol class="steps">
-      <li><b>Add your keys.</b> <span>In Settings, paste your OpenRouter key and Replicate token (forced-aligned lyric timing). Encrypted via your OS keychain.</span></li>
+      <li><b>Install the models.</b> <span>A one-time on-device setup downloads the models (transcription, story LLM, keyframes, video) to your Mac — no accounts, no keys.</span></li>
       <li><b>Drop in a song</b> <span>and optionally build a cast — reusable characters from a photo or a description.</span></li>
       <li><b>It writes &amp; renders.</b> <span>Story from the lyrics → shot list → identity-preserving keyframes → per-scene clips → beat-cut assemble.</span></li>
       <li><b>Preview, refine, export.</b> <span>Watch the preview, re-roll any scene, then render the full song to an MP4 (tagged as AI-generated).</span></li>
@@ -211,7 +211,7 @@
       <a href="https://github.com/lBroth/videoboom/blob/main/LICENSE">Apache-2.0</a>
     </div>
   </div>
-  <div class="wrap"><div class="note">Videoboom orchestrates third-party model APIs with your keys; you are responsible for each provider’s terms and the content you generate.</div></div>
+  <div class="wrap"><div class="note">Videoboom runs open models on your own machine; you are responsible for the content you generate and for the licenses of the models you download.</div></div>
 </footer>
 </body>
 </html>

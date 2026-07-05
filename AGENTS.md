@@ -3,23 +3,25 @@
 Rules any agent (human or AI) MUST follow in this repo. Violations have caused real bugs.
 
 ## What this is
-Videoboom is an **open-source, bring-your-own-key (BYOK) desktop app** that turns a song into a music
-video on the user's own machine. An **Electron** shell (`src/main`, `src/preload`, `renderer/`) runs an
-**in-process TypeScript render engine** (`src/engine/`); ffmpeg ships bundled (`ffmpeg-static`). The user
-pastes their own provider keys; the app calls those providers directly and the user pays them at cost.
-**No accounts, no server, no wallet, no Python, nothing leaves the machine** except the generation API
-calls. Ships for Windows / macOS / Linux.
+Videoboom is an **open-source, local-only desktop app** that turns a song into a music video entirely on
+the user's own machine. An **Electron** shell (`src/main`, `src/preload`, `renderer/`) runs an **in-process
+TypeScript render engine** (`src/engine/`); ffmpeg ships bundled (`ffmpeg-static`). Every generation stage
+runs **on-device** (Apple Silicon / MLX) through a resident Python sidecar (`local/server.py`). **No
+accounts, no server, no wallet, no API keys** — the only network use is downloading the model weights once.
+Nothing about the song or the video leaves the machine. Targets macOS (Apple Silicon).
 
-> History: this was once a local-first Mac app (Phase 0), then an AWS serverless SaaS (coins / Cognito /
-> DynamoDB / Step Functions). Both are gone — that code was deleted (recoverable from git history).
-> Anything mentioning coins, wallets, Cognito, DynamoDB, S3, Lambda, or CDK is **historical**.
+> History: this was once an AWS serverless SaaS (coins / Cognito / DynamoDB), then a bring-your-own-key
+> cloud build (OpenRouter / Replicate). Both are gone — that code was deleted (recoverable from git
+> history). Anything mentioning coins, wallets, Cognito/DynamoDB/S3/Lambda/CDK, **or cloud provider keys
+> (OpenRouter, Replicate, `VB_*_MODEL` slugs, `safeStorage` keychain)** is **historical**.
 
 ## Docs
 - **Keep docs in sync with the code.** Any change to the architecture, the render flow, the engine/IPC
-  contract, key storage, providers, or env/config MUST update the matching doc in the SAME change —
+  contract, the on-device model stack, or env/config MUST update the matching doc in the SAME change —
   stale docs that claim the wrong behavior are treated as bugs.
 - Current docs that MUST stay accurate (keep minimal + truthful): `README.md`, `AGENTS.md`,
-  `docs/ARCHITECTURE.md`, `docs/FOLDER-STRUCTURE.md`, `docs/PROVIDERS.md`, `docs/ROADMAP.md`.
+  `docs/ARCHITECTURE.md`, `docs/FOLDER-STRUCTURE.md`, `docs/MODELS.md`, `docs/LOCAL-MODELS.md`,
+  `docs/ROADMAP.md`.
 - Don't hoard docs — few accurate ones beat many stale ones. `docs/research/*` is point-in-time
   reference; truly dead docs are deleted, not left to rot.
 
@@ -36,19 +38,21 @@ calls. Ships for Windows / macOS / Linux.
 - **English only** — all UI text, code, comments, docs, and commit messages. (Assistant chat replies may
   match the user's language; anything written into the repo is English.)
 
-## Keys & privacy (BYOK)
-- API keys are the **user's**. Stored **encrypted via the OS keychain** (Electron `safeStorage`) in the
-  app's userData; decrypted only in-memory and injected into the render engine per operation as config
-  (`VB_OPENROUTER_API_KEY`, `REPLICATE_API_TOKEN`, …, read via `src/engine/config.ts`). **Never log
-  secrets**; never write them to the project store or to git. The gitignored `keys.json` must never be
-  committed.
-- Nothing is uploaded to a Videoboom server — there is none. The only network calls are to the provider
-  APIs the user configured.
+## Privacy (local-only)
+- There are **no API keys and no secrets** — every stage runs on-device. Do NOT reintroduce cloud clients,
+  key storage (`safeStorage`/`keys.json`), or `VB_*_API_KEY` / provider-token env. Boot removes any stale
+  `keys.json` left by the old cloud build.
+- Nothing is uploaded anywhere. The **only** network use is downloading model weights (Hugging Face) via
+  `local/setup.sh` / `local/download.py`. Generation itself is fully offline.
 
-## Models are user-facing (the opposite of the old SaaS)
-- This is BYOK: the user **chooses** the LLM / image / video models in **Settings**. Every model is a
-  `VB_*_MODEL` env var with a sensible default. Naming models in the UI/docs is fine here. Do NOT
-  re-introduce the old "hide the provider" stripping — that was a SaaS concern.
+## On-device models
+- Stages run locally on Apple Silicon (MLX) through the sidecar: STT (mlx-whisper), story/shot-list LLM
+  (mlx-lm), keyframes (mflux FLUX + Kontext), image-to-video (mlx-video Wan 2.2), portrait caption + safety
+  (mlx-vlm). The TypeScript wrappers in `src/engine/stages.ts` delegate to the `src/engine/local*.ts`
+  modules; keep that indirection (no cloud branch). Video model + fast/hd quality are chosen in Settings
+  (`src/main/settings.ts`, injected as `VB_*` env). See `docs/MODELS.md`.
+- A machine that can't run on-device (not Apple Silicon, or under the RAM floor) is surfaced via
+  `localCapabilities()`; the required-hardware spec lives in ONE place (`HARDWARE_SPEC`).
 
 ## Engine contract
 - The engine runs **in-process** (`src/engine/`), driven by `runEngine(command, args, env, onEvent)`
@@ -58,16 +62,18 @@ calls. Ships for Windows / macOS / Linux.
   contract). Same command set as before: `create-project`, `render` (`--preview`), `resume`,
   `regenerate-scene`, `character-create`, `character-portrait`, `get-project`.
 - The engine is async throughout — it runs in the main process, so it must **never block the event loop**:
-  ffmpeg runs as async child processes, model calls are `fetch`. No `spawnSync` on hot paths.
+  ffmpeg runs as async child processes, model calls are async HTTP to the localhost sidecar. No `spawnSync`
+  on hot paths.
 - State + media are **plain files** under `VB_DATA_DIR` (default the app's userData `data/`).
   `src/engine/storage.ts` is **local filesystem only** — do not reintroduce any cloud coupling.
 - ffmpeg/ffprobe come from `ffmpeg-static` / `ffprobe-static`; packaged builds `asarUnpack` them and the
   engine rewrites `app.asar` → `app.asar.unpacked` in the binary path.
 
 ## Image / video generation
-- **Video model = Kling** (`kwaivgi/kling-v3.0-std` for Fast, `-pro` for HD) via OpenRouter, first+last
-  frame morph (duration {5,10}). Kling animates realistic adults, children, AND toon. Keep
-  `genVideo()` model-agnostic so the user can swap in another i2v model from Settings.
+- **Video model = Wan 2.2** on-device (mlx-video): I2V-A14B is the default (fast = Lightning 4-step, hd =
+  full-step), with TI2V-5B as the fast tier. Each scene renders as one continuous shot of chained native
+  sub-clips (single start frame), then trims to the frame grid — never a stretched slow-mo clip. Keep the
+  5b/14b + fast/hd logic in `localVideo.ts` intact.
 - **Identity**: keyframes are built from the cast's reference portraits with a strong "reproduce every
   facial feature exactly, no blending/de-aging" prompt; the cap (`VB_MAX_SUBJECTS`) must cover the whole
   cast (a dropped reference = an invented subject). The clip animates the keyframe, so keyframe identity
