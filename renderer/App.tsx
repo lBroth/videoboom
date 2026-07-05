@@ -4,7 +4,7 @@ import {
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Sparkles, Film, UserRound, Settings as SettingsIcon, Music, Plus, RotateCcw, Trash2,
-  Image as ImageIcon, Wand2, AlertTriangle, CheckCircle2, ChevronRight, Download,
+  Image as ImageIcon, Wand2, AlertTriangle, CheckCircle2, Download,
 } from 'lucide-react';
 import {
   Button, IconButton, Card, Field, Segmented, ProgressBar, Spinner, StatusDot, EmptyState,
@@ -437,16 +437,18 @@ function CharCard({ c }: { c: Character }) {
 }
 
 // ── Settings ──
-const LOCAL_STAGES: { key: keyof Settings; stage: string; label: string; cloud: string; local: string; size: string }[] = [
-  { key: 'sttBackend', stage: 'STT', label: 'Lyric timing (STT)', cloud: 'WhisperX · Replicate', local: 'whisper · mlx', size: '~1.6 GB' },
-  { key: 'llmBackend', stage: 'LLM', label: 'Story & shot-list (LLM)', cloud: 'Claude / Gemini', local: 'Qwen3 · mlx-lm', size: '~19 GB' },
-  { key: 'vlmBackend', stage: 'VLM', label: 'Face caption + safety (VLM)', cloud: 'gemma · cloud', local: 'gemma-3 · mlx-vlm', size: '~8 GB' },
-  { key: 'keyframeBackend', stage: 'KEYFRAME', label: 'Keyframe images', cloud: 'gemini-image', local: 'FLUX · mflux', size: '~15 GB' },
+// Every generation stage runs on-device. The card lists each stage's model with its size and a Download
+// button when the weights aren't on disk yet; video has a Fast/Quality choice (the model + speed).
+const DL_STAGES: { stage: string; label: string; model: string; size: string }[] = [
+  { stage: 'VIDEO', label: 'Video (image→video)', model: 'Wan 2.2 · mlx-video', size: '~54 GB' },
+  { stage: 'KEYFRAME', label: 'Keyframe images', model: 'FLUX · mflux', size: '~15 GB' },
+  { stage: 'LLM', label: 'Story & shot-list', model: 'Qwen3 · mlx-lm', size: '~19 GB' },
+  { stage: 'VLM', label: 'Face caption + safety', model: 'gemma-3 · mlx-vlm', size: '~8 GB' },
+  { stage: 'STT', label: 'Lyric timing', model: 'whisper · mlx', size: '~1.6 GB' },
 ];
 
-// One stage row: Cloud/Local toggle where Local is gated until the model is downloaded; shows a Download
-// button (with live % progress) when the model is absent.
-function StageRow({ st, value }: { st: (typeof LOCAL_STAGES)[number]; value: 'cloud' | 'local' }) {
+// One stage: "Installed" when the weights are on disk, else a Download button with live % progress.
+function StageDownloadRow({ st }: { st: (typeof DL_STAGES)[number] }) {
   const qc = useQueryClient();
   const status = useQuery({ queryKey: ['modelStatus'], queryFn: () => vb.modelsStatus() });
   const [dl, setDl] = useState<{ pct: number } | null>(null);
@@ -464,63 +466,46 @@ function StageRow({ st, value }: { st: (typeof LOCAL_STAGES)[number]; value: 'cl
     vb.downloadModel(st.stage).catch((e) => { setErr(String(e?.message || e)); setDl(null); off(); });
   };
 
-  const pick = (b: 'cloud' | 'local') => {
-    if (b === 'local' && !ready) return; // gated — must download first
-    vb.setSettings({ [st.key]: b } as Partial<Settings>).then(() => qc.invalidateQueries({ queryKey: ['settings'] }));
-  };
-
   return (
-    <Field label={st.label}>
-      <div className="grid grid-cols-2 gap-2">
-        <button onClick={() => pick('cloud')}
-          className={cx('rounded-lg border px-3 py-2 text-left transition-colors',
-            value === 'cloud' ? 'border-violet-400/60 bg-violet-500/10 text-slate-100' : 'border-white/10 hover:bg-white/[0.03] text-slate-300')}>
-          <div className="text-sm font-medium">Cloud</div>
-          <div className="text-xs text-slate-500">{st.cloud}</div>
-        </button>
-        <button onClick={() => pick('local')} disabled={!ready}
-          className={cx('rounded-lg border px-3 py-2 text-left transition-colors',
-            value === 'local' ? 'border-violet-400/60 bg-violet-500/10 text-slate-100'
-              : ready ? 'border-white/10 hover:bg-white/[0.03] text-slate-300' : 'border-white/5 text-slate-600 cursor-not-allowed')}>
-          <div className="text-sm font-medium flex items-center gap-1">Local {ready && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />}</div>
-          <div className="text-xs text-slate-500">{st.local}</div>
-        </button>
+    <div className="flex items-center gap-3 py-1.5">
+      <div className="flex-1 min-w-0">
+        <div className="text-sm text-slate-200 truncate">{st.label}</div>
+        <div className="text-xs text-slate-500">{st.model} · {st.size}</div>
       </div>
-      {!ready && (
-        <div className="mt-1.5">
-          {dl ? (
-            <div className="flex items-center gap-2">
-              <div className="flex-1 h-1.5 rounded-full bg-white/10 overflow-hidden"><div className="h-full bg-violet-400 transition-all" style={{ width: `${dl.pct}%` }} /></div>
-              <span className="text-xs text-slate-400 tabular-nums">{dl.pct.toFixed(0)}%</span>
-              <button onClick={() => vb.cancelDownload(st.stage)} className="text-xs text-slate-500 hover:text-slate-300">cancel</button>
-            </div>
-          ) : (
-            <button onClick={startDownload} className="text-xs inline-flex items-center gap-1.5 rounded-lg border border-violet-400/40 bg-violet-500/10 px-2.5 py-1 text-violet-200 hover:bg-violet-500/20">
-              <Download className="w-3.5 h-3.5" /> Download model ({st.size}) to enable Local
-            </button>
-          )}
-          {err && <div className="text-xs text-red-300 mt-1">{err}</div>}
+      {ready ? (
+        <span className="text-xs text-emerald-400 inline-flex items-center gap-1 shrink-0"><CheckCircle2 className="w-3.5 h-3.5" />Installed</span>
+      ) : dl ? (
+        <div className="flex items-center gap-2 w-44 shrink-0">
+          <div className="flex-1 h-1.5 rounded-full bg-white/10 overflow-hidden"><div className="h-full bg-violet-400 transition-all" style={{ width: `${dl.pct}%` }} /></div>
+          <span className="text-xs text-slate-400 tabular-nums w-8 text-right">{dl.pct.toFixed(0)}%</span>
+          <button onClick={() => vb.cancelDownload(st.stage)} className="text-xs text-slate-500 hover:text-slate-300">cancel</button>
         </div>
+      ) : (
+        <button onClick={startDownload} className="text-xs inline-flex items-center gap-1.5 rounded-lg border border-violet-400/40 bg-violet-500/10 px-2.5 py-1 text-violet-200 hover:bg-violet-500/20 shrink-0">
+          <Download className="w-3.5 h-3.5" /> Download
+        </button>
       )}
-    </Field>
+      {err && <div className="text-xs text-red-300 shrink-0">{err}</div>}
+    </div>
   );
 }
-const MODEL_FIELDS: { key: keyof Settings; label: string }[] = [
-  { key: 'storyModel', label: 'Story model (LLM)' },
-  { key: 'llmModel', label: 'Shot-list model (LLM)' },
-  { key: 'keyframeModel', label: 'Keyframe image model' },
-  { key: 'videoModel', label: 'Video model (i2v)' },
-  { key: 'vlmModel', label: 'Portrait caption (VLM)' },
+
+// Fast/Quality IS the model choice: Fast = FastWan-5B (DMD 3-step draft), Quality = Wan 14B (bf16-relay).
+// Both finish at 1080p (the shot renders at 480p on-device, then interpolates + upscales).
+const VIDEO_MODES: { key: '5b' | '14b'; title: string; sub: string }[] = [
+  { key: '5b', title: 'Fast', sub: 'FastWan-5B · 3-step draft · ~4–5 min/clip' },
+  { key: '14b', title: 'Quality', sub: 'Wan 14B · best detail · slower' },
 ];
 
 function SettingsScreen() {
   const qc = useQueryClient();
   const settings = useQuery({ queryKey: ['settings'], queryFn: () => vb.getSettings() });
   const caps = useQuery({ queryKey: ['localCaps'], queryFn: () => vb.localCapabilities() });
-  const status = useQuery({ queryKey: ['modelStatus'], queryFn: () => vb.modelsStatus() });
   const [dataDir, setDataDir] = useState('');
-  const [adv, setAdv] = useState(false);
   useEffect(() => { vb.dataDir().then(setDataDir); }, []);
+
+  const mode: '5b' | '14b' = settings.data?.localVideoModel === '5b' ? '5b' : '14b';
+  const setMode = (m: '5b' | '14b') => vb.setSettings({ localVideoModel: m }).then(() => qc.invalidateQueries({ queryKey: ['settings'] }));
 
   return (
     <div className="space-y-5 animate-fade-up max-w-2xl">
@@ -533,96 +518,40 @@ function SettingsScreen() {
 
           {!caps.data.supported ? (
             <div className="rounded-xl bg-amber-500/10 border border-amber-500/20 px-3 py-2.5 text-sm text-amber-200/90">
-              On-device models need an <b>Apple Silicon Mac</b> with <b>{caps.data.minRamGB}GB+</b> unified memory ({caps.data.recommendedRamGB}GB recommended). {caps.data.reason} Everything runs in the cloud here.
+              Videoboom runs entirely on-device and needs an <b>Apple Silicon Mac</b> with <b>{caps.data.minRamGB}GB+</b> unified memory ({caps.data.recommendedRamGB}GB recommended). {caps.data.reason}
             </div>
           ) : (
             <>
-              <p className="text-sm text-slate-400 -mt-1">Run each stage on this Mac (MLX) — no key, no cost, fully offline — or in the cloud. Local is slower and the model downloads once. Needs ~24GB free for video at peak; {caps.data.recommendedRamGB}GB recommended.</p>
+              <p className="text-sm text-slate-400 -mt-1">Everything runs on this Mac (MLX) — no key, no cloud, fully offline. Each model downloads once. Video needs ~24GB free at peak; {caps.data.recommendedRamGB}GB memory recommended.</p>
               {!caps.data.depsInstalled && (
                 <div className="rounded-xl bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-xs text-amber-200/90">
-                  Local engine not installed yet — run <code className="text-amber-100">bash local/setup.sh</code> once (installs mlx + downloads the Wan video model).
+                  Local engine not installed yet — run <code className="text-amber-100">bash local/setup.sh</code> once (installs mlx + downloads the models).
                 </div>
               )}
-              <Field label="Video (i2v)">
+              <Field label="Video quality">
                 <div className="grid grid-cols-2 gap-2">
-                  <button onClick={() => vb.setSettings({ videoBackend: 'cloud' }).then(() => qc.invalidateQueries({ queryKey: ['settings'] }))}
-                    className={cx('rounded-lg border px-3 py-2 text-left transition-colors', settings.data!.videoBackend === 'cloud' ? 'border-violet-400/60 bg-violet-500/10 text-slate-100' : 'border-white/10 hover:bg-white/[0.03] text-slate-300')}>
-                    <div className="text-sm font-medium">Cloud</div><div className="text-xs text-slate-500">Kling · OpenRouter</div>
-                  </button>
-                  <button onClick={() => { if (status.data?.VIDEO === 'ready') vb.setSettings({ videoBackend: 'local' }).then(() => qc.invalidateQueries({ queryKey: ['settings'] })); }} disabled={status.data?.VIDEO !== 'ready'}
-                    className={cx('rounded-lg border px-3 py-2 text-left transition-colors', settings.data!.videoBackend === 'local' ? 'border-violet-400/60 bg-violet-500/10 text-slate-100' : status.data?.VIDEO === 'ready' ? 'border-white/10 hover:bg-white/[0.03] text-slate-300' : 'border-white/5 text-slate-600 cursor-not-allowed')}>
-                    <div className="text-sm font-medium flex items-center gap-1">Local {status.data?.VIDEO === 'ready' && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />}</div>
-                    <div className="text-xs text-slate-500">{status.data?.VIDEO === 'ready' ? 'Wan 2.2 · ~24GB peak' : 'run local/setup.sh'}</div>
-                  </button>
-                </div>
-              </Field>
-              {LOCAL_STAGES.map((st) => (
-                <StageRow key={st.key} st={st} value={settings.data![st.key] as 'cloud' | 'local'} />
-              ))}
-            </>
-          )}
-
-          {caps.data.supported && settings.data.videoBackend === 'local' && (
-            <div className="space-y-3 border-t border-white/5 pt-3">
-              <Field label="Local video model">
-                <div className="grid grid-cols-3 gap-2">
-                  {([['14b', 'Wan 14B', '480p→1080p · best quality'], ['ltx', 'LTX-2.3', '896×512 · smooth flow · fast'], ['5b', 'Wan 5B', '480p · fast · deforms people']] as const).map(([m, t, sub]) => (
-                    <button key={m} onClick={() => vb.setSettings({ localVideoModel: m }).then(() => qc.invalidateQueries({ queryKey: ['settings'] }))}
+                  {VIDEO_MODES.map((v) => (
+                    <button key={v.key} onClick={() => setMode(v.key)}
                       className={cx('rounded-lg border px-3 py-2 text-left transition-colors',
-                        (settings.data!.localVideoModel || '14b') === m ? 'border-violet-400/60 bg-violet-500/10 text-slate-100' : 'border-white/10 hover:bg-white/[0.03] text-slate-300')}>
-                      <div className="text-sm font-medium">{t}</div><div className="text-xs text-slate-500">{sub}</div>
+                        mode === v.key ? 'border-violet-400/60 bg-violet-500/10 text-slate-100' : 'border-white/10 hover:bg-white/[0.03] text-slate-300')}>
+                      <div className="text-sm font-medium">{v.title}</div><div className="text-xs text-slate-500">{v.sub}</div>
                     </button>
                   ))}
                 </div>
               </Field>
-              {(settings.data.localVideoModel || '14b') !== 'ltx' && (
-                <Field label="Speed / quality">
-                  <div className="grid grid-cols-2 gap-2">
-                    {((settings.data.localVideoModel || '14b') === '14b'
-                      ? ([['fast', 'Fast · Lightning 4-step', '~4-5 min/clip'], ['hd', 'Quality · 40 steps', 'very slow (~38 min/clip)']] as const)
-                      : ([['fast', 'Fast · 10 steps', '~2 min/clip'], ['hd', 'Quality · 20 steps', '~4 min/clip, sharper']] as const)).map(([q, t, sub]) => (
-                      <button key={q} onClick={() => vb.setSettings({ localQuality: q }).then(() => qc.invalidateQueries({ queryKey: ['settings'] }))}
-                        className={cx('rounded-lg border px-3 py-2 text-left transition-colors',
-                          settings.data!.localQuality === q ? 'border-violet-400/60 bg-violet-500/10 text-slate-100' : 'border-white/10 hover:bg-white/[0.03] text-slate-300')}>
-                        <div className="text-sm font-medium">{t}</div><div className="text-xs text-slate-500">{sub}</div>
-                      </button>
-                    ))}
-                  </div>
-                </Field>
-              )}
-              <p className="text-xs text-slate-400">{(settings.data.localVideoModel || '14b') === 'ltx'
-                ? 'LTX-2.3 renders 896×512 fast with smooth flow; motion is weaker than Wan 14B. Run bash local/setup.sh to fetch it.'
-                : 'Wan renders 480p (720p needs more than 48GB on this Mac); the finish pass interpolates + upscales to 1080p.'}</p>
-            </div>
-          )}
-        </Card>
-      )}
-
-      <Card className="overflow-hidden">
-        <button onClick={() => setAdv((v) => !v)} className="w-full flex items-center gap-2 p-5 text-left hover:bg-white/[0.03] transition-colors">
-          <SettingsIcon className="w-5 h-5 text-violet-300" />
-          <span className="font-semibold text-slate-100">Advanced — models</span>
-          <span className="text-xs text-slate-500 ml-1">choose which AI models to use</span>
-          <ChevronRight className={cx('w-5 h-5 text-slate-400 ml-auto transition-transform', adv && 'rotate-90')} />
-        </button>
-        {adv && (
-          <div className="px-5 pb-5 space-y-4 border-t border-white/5 pt-4">
-            <p className="text-sm text-slate-400">OpenRouter / Replicate model slugs. Defaults are tuned for quality — swap the <b className="text-slate-300">video model</b> for a cheaper one to cut cost per minute.</p>
-            {settings.data && MODEL_FIELDS.map((m) => (
-              <Field key={m.key} label={m.label}>
-                <input className={inputCls} defaultValue={String(settings.data![m.key] ?? '')}
-                  onBlur={(e) => { const v = e.target.value.trim(); if (v !== String(settings.data![m.key])) vb.setSettings({ [m.key]: v } as Partial<Settings>).then(() => qc.invalidateQueries({ queryKey: ['settings'] })); }} />
-              </Field>
-            ))}
-            {settings.data && (
+              <p className="text-xs text-slate-400 -mt-2">Both modes finish at 1080p — the shot renders at 480p on-device, then the finish pass interpolates + upscales.</p>
+              <div className="border-t border-white/5 pt-3 space-y-0.5">
+                <div className="text-xs font-medium text-slate-400 mb-1">Models on disk</div>
+                {DL_STAGES.map((st) => <StageDownloadRow key={st.stage} st={st} />)}
+              </div>
               <Field label="Lyrics language" hint="blank = auto-detect">
                 <input className={inputCls} defaultValue={settings.data.sttLang} placeholder="it, en, es…"
                   onBlur={(e) => vb.setSettings({ sttLang: e.target.value.trim() }).then(() => qc.invalidateQueries({ queryKey: ['settings'] }))} />
               </Field>
-            )}
-          </div>
-        )}
-      </Card>
+            </>
+          )}
+        </Card>
+      )}
 
       <Card className="p-4 text-xs text-slate-500">Projects are stored in <span className="text-slate-300 break-all">{dataDir}</span></Card>
     </div>

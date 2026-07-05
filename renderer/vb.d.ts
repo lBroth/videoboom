@@ -17,11 +17,10 @@ export interface Scene {
   startSec?: number; endSec?: number;
 }
 export interface Settings {
-  storyModel: string; llmModel: string; keyframeModel: string; videoModel: string;
-  vlmModel: string; moderationModel: string; sttLang: string; workers: number;
-  videoBackend: 'cloud' | 'local'; localVideoModel: 'ltx' | '5b' | '14b'; localQuality: 'fast' | 'hd'; localWanDir: string;
-  sttBackend: 'cloud' | 'local'; llmBackend: 'cloud' | 'local'; vlmBackend: 'cloud' | 'local';
-  keyframeBackend: 'cloud' | 'local';
+  settingsVersion: number;
+  sttLang: string; workers: number;
+  // Fast = FastWan-5B (DMD 3-step draft), Quality = Wan 14B (bf16-relay); both finish at 1080p.
+  localVideoModel: '5b' | '14b'; localQuality: 'fast' | 'hd'; localWanDir: string;
 }
 export interface LocalCapabilities {
   platform: string; arch: string; ramGB: number; isAppleSilicon: boolean;
