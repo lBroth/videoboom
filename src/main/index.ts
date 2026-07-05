@@ -9,8 +9,9 @@ import { runEngine, dataDir, EngineEvent } from '../engine';
 // App icon — bundled under icons/ (inside app.asar when packaged). Used for the window (win/linux) and
 // the macOS dock in dev (packaged macOS gets its icon from the .app bundle automatically).
 const ICON = path.join(app.getAppPath(), 'icons', 'icon.png');
-import { settingsEnv, getSettings, setSettings, Settings } from './settings';
-import { keyStatus, setKey } from './keychain';
+import { getSettings, setSettings, Settings } from './settings';
+import { keyStatus, setKey, keysEnv } from './keychain';
+import { resolveConfig, type KeyState } from './autoconfig';
 import { modelStatus, downloadModel, localCapabilities, DownloadRun } from './localModels';
 import { getProject, listScenes, listProjects, listCharacters, mediaUrl } from './projects';
 
@@ -64,36 +65,50 @@ function runSmokeTest() {
 }
 
 // The environment for every engine op: the on-device model settings (no secrets — everything runs locally).
+function keyState(): KeyState {
+  const s = keyStatus();
+  return { openrouter: Boolean(s.openrouter), replicate: Boolean(s.replicate) };
+}
+
+/** The resolver's decision for the current settings + hardware + keys — the single source of truth for
+ * which backend each stage uses (and the VB_* env the engine reads). Recomputed per op so a mid-session
+ * settings/key change takes effect on the next render. */
+function resolvedConfig() {
+  return resolveConfig(localCapabilities(), getSettings(), keyState());
+}
+
 function sidecarEnv(): Record<string, string> {
-  return { ...settingsEnv() };
+  // Optional cloud keys (decrypted, main-process only) + the resolved per-stage backends / slugs / local block.
+  return { ...keysEnv(), ...resolvedConfig().toEnv() };
 }
 
 // Run a streaming engine op: forward each event to the renderer on `sidecar:<opId>`, resolve on result.
-// (Channel name kept as `sidecar:` so the preload/renderer contract is unchanged.)
-function streamOp(opId: string, command: string, args: string[], extraEnv?: Record<string, string>) {
+// (Channel name kept as `sidecar:` so the preload/renderer contract is unchanged.) `usesGpu` marks ops that
+// hold the on-device GPU (a render whose video/keyframe resolves local, or a local portrait) so an all-cloud
+// op never blocks or is blocked by the GPU lock.
+function streamOp(opId: string, command: string, args: string[], extraEnv?: Record<string, string>, usesGpu = false) {
+  if (usesGpu) GPU_OPS.add(opId);
   const run = runEngine(command, args, { ...sidecarEnv(), ...(extraEnv || {}) }, (e: EngineEvent) => {
     win?.webContents.send(`sidecar:${opId}`, e);
   });
   RUNS.set(opId, run);
-  run.done.finally(() => RUNS.delete(opId));
+  run.done.finally(() => { RUNS.delete(opId); GPU_OPS.delete(opId); });
   return run.done;
 }
 const RUNS = new Map<string, ReturnType<typeof runEngine>>();
 const DOWNLOADS = new Map<string, DownloadRun>();
+// Ops currently holding the on-device GPU (see streamOp `usesGpu`). An all-cloud render/portrait is NOT here,
+// so it neither blocks nor is blocked by the GPU lock.
+const GPU_OPS = new Set<string>();
 
-// The on-device stages a render needs, and whether their model is installed. Everything runs locally, so a
-// render is blocked until each of these is downloaded (in Settings). VLM (face caption) is portrait-only, so
-// it isn't a render prerequisite.
-const RENDER_STAGES: [string, string][] = [
-  ['STT', 'Lyric timing'],
-  ['LLM', 'Story & shots'],
-  ['KEYFRAME', 'Keyframes'],
-  ['VIDEO', 'Video (Wan)'],
+// The stages a render needs + a friendly label + the cloud provider that gates each. VLM (face caption) is
+// portrait-only, so it isn't a render prerequisite.
+const RENDER_STAGES: { key: 'STT' | 'LLM' | 'KEYFRAME' | 'VIDEO'; label: string; provider: keyof KeyState }[] = [
+  { key: 'STT', label: 'Lyric timing', provider: 'replicate' },
+  { key: 'LLM', label: 'Story & shots', provider: 'openrouter' },
+  { key: 'KEYFRAME', label: 'Keyframes', provider: 'openrouter' },
+  { key: 'VIDEO', label: 'Video (Wan)', provider: 'openrouter' },
 ];
-function missingLocalModels(): string[] {
-  const st = modelStatus();
-  return RENDER_STAGES.filter(([key]) => st[key] !== 'ready').map(([, label]) => label);
-}
 
 // Refuse an op and surface the reason on its own progress channel (the renderer is listening there).
 function refuse(opId: string, message: string): Promise<never> {
@@ -101,27 +116,52 @@ function refuse(opId: string, message: string): Promise<never> {
   return Promise.reject(new Error(message));
 }
 
-// One GPU generation at a time: a render OR a character portrait (both drive the model sidecar). They block
-// each other so a video render and an AI image gen can't run concurrently and fight for memory.
 function gpuBusy(): boolean {
-  return [...RUNS.keys()].some((k) => k.startsWith('render:') || k.startsWith('portrait:'));
+  return GPU_OPS.size > 0;
 }
 
-/** Guard render starts: one generation at a time, no render mid-download, required local models present. */
+/** Does this op actually drive the on-device GPU under the current resolution? A render uses it if VIDEO or
+ * KEYFRAME resolve local; a portrait if KEYFRAME or VLM resolve local. All-cloud ops use no GPU. */
+function renderNeedsGpu(): boolean {
+  const s = resolvedConfig().stages;
+  return s.VIDEO.backend === 'local' || s.KEYFRAME.backend === 'local';
+}
+function portraitNeedsGpu(): boolean {
+  const s = resolvedConfig().stages;
+  return s.KEYFRAME.backend === 'local' || s.VLM.backend === 'local';
+}
+
+/** Guard render starts. Only stages that RESOLVE LOCAL need their model on disk; a stage resolved cloud needs
+ * no download (the resolver guarantees its key). A stage resolved local on a machine that can't run it is
+ * blocked with the specific missing-key / opt-in nudge — never silently sent to cloud (I3). */
 function guardRender(pid: string): Promise<never> | null {
   const opId = `render:${pid}`;
   if (DOWNLOADS.size) return refuse(opId, 'A model download is in progress — wait for it to finish, then render.');
-  const miss = missingLocalModels();
-  if (miss.length) return refuse(opId, `Download the local model(s) first in Settings → On-device: ${miss.join(', ')}.`);
-  if (gpuBusy()) return refuse(opId, 'A generation is already running — only one runs at a time.');
+  const resolved = resolvedConfig();
+  const st = modelStatus();
+  const missing: string[] = [];
+  for (const { key, label, provider } of RENDER_STAGES) {
+    const rs = resolved.stages[key];
+    if (rs.backend !== 'local') continue;            // cloud-resolved → no local model needed
+    if (!rs.localAvailable) {                         // machine can't run this stage on-device
+      const provLabel = provider === 'replicate' ? 'Replicate' : 'OpenRouter';
+      return refuse(opId, keyState()[provider]
+        ? `This machine can't run ${label} on-device — pick Cloud for it in Settings → Models.`
+        : `${label} needs a ${provLabel} key on this machine (on-device isn't supported here). Add one in Settings.`);
+    }
+    if (st[key] !== 'ready') missing.push(label);     // supported, but the model isn't downloaded yet
+  }
+  if (missing.length) return refuse(opId, `Download the local model(s) first in Settings → On-device: ${missing.join(', ')}.`);
+  if (renderNeedsGpu() && gpuBusy()) return refuse(opId, 'A generation is already running — only one runs at a time.');
   return null;
 }
 
-/** Guard an AI character-portrait gen: blocked while a render or another portrait runs, or mid-download. */
+/** Guard an AI character-portrait gen: blocked mid-download, or (only when it uses the GPU) while another
+ * GPU op runs. A cloud-keyframe portrait can run alongside a local render. */
 function guardPortrait(cid: string): Promise<never> | null {
   const opId = `portrait:${cid}`;
   if (DOWNLOADS.size) return refuse(opId, 'A model download is in progress — wait for it to finish.');
-  if (gpuBusy()) return refuse(opId, 'A generation is already running — wait for it to finish, then try again.');
+  if (portraitNeedsGpu() && gpuBusy()) return refuse(opId, 'A generation is already running — wait for it to finish, then try again.');
   return null;
 }
 
@@ -216,7 +256,7 @@ function registerIpc() {
     streamOp('charcreate', 'character-create', ['--name', o.name || '', '--style', o.style || '']));
   ipcMain.handle('character:portrait', (_e, o: { character: string; photo?: string; prompt?: string }) =>
     guardPortrait(o.character) ?? streamOp('portrait:' + o.character, 'character-portrait',
-      ['--character', o.character, ...(o.photo ? ['--photo', o.photo] : []), ...(o.prompt ? ['--prompt', o.prompt] : [])]));
+      ['--character', o.character, ...(o.photo ? ['--photo', o.photo] : []), ...(o.prompt ? ['--prompt', o.prompt] : [])], undefined, portraitNeedsGpu()));
 
   // ── on-device model availability + downloads (renderer subscribes to download:<STAGE>) ──
   ipcMain.handle('local:capabilities', () => localCapabilities());
@@ -239,13 +279,13 @@ function registerIpc() {
   // ── streaming render ops (renderer subscribes to sidecar:<opId>) ──
   ipcMain.handle('render:start', (_e, o: { pid: string; preview: boolean; regenStory?: boolean }) =>
     guardRender(o.pid) ?? streamOp('render:' + o.pid, 'render',
-      ['--project', o.pid, ...(o.preview ? ['--preview'] : []), ...(o.regenStory ? ['--regen-story'] : [])]));
-  ipcMain.handle('render:resume', (_e, pid: string) => guardRender(pid) ?? streamOp('render:' + pid, 'resume', ['--project', pid]));
+      ['--project', o.pid, ...(o.preview ? ['--preview'] : []), ...(o.regenStory ? ['--regen-story'] : [])], undefined, renderNeedsGpu()));
+  ipcMain.handle('render:resume', (_e, pid: string) => guardRender(pid) ?? streamOp('render:' + pid, 'resume', ['--project', pid], undefined, renderNeedsGpu()));
   // Re-render the existing clips at quality (20 steps), reusing storyboard + keyframes — only the video step.
   ipcMain.handle('render:requality', (_e, pid: string) =>
-    guardRender(pid) ?? streamOp('render:' + pid, 'rerender-clips', ['--project', pid], { VB_LOCAL_WAN_STEPS: '20' }));
+    guardRender(pid) ?? streamOp('render:' + pid, 'rerender-clips', ['--project', pid], { VB_LOCAL_WAN_STEPS: '20' }, renderNeedsGpu()));
   ipcMain.handle('scene:regenerate', (_e, o: { pid: string; index: number }) =>
-    guardRender(o.pid) ?? streamOp('render:' + o.pid, 'regenerate-scene', ['--project', o.pid, '--index', String(o.index)]));
+    guardRender(o.pid) ?? streamOp('render:' + o.pid, 'regenerate-scene', ['--project', o.pid, '--index', String(o.index)], undefined, renderNeedsGpu()));
   ipcMain.handle('op:cancel', (_e, opId: string) => { RUNS.get(opId)?.cancel(); return true; });
 }
 
