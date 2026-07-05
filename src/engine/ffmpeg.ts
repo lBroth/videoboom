@@ -122,20 +122,24 @@ export async function trimToWindow(raw: string, startSec: number, endSec: number
   return out;
 }
 
-/** Conform a generated clip to EXACTLY its scene's frame-grid slot so concatenated scenes stay locked to
- * the song with NO cumulative drift (boundaries snapped to round(t*fps); counts telescope across scenes).
- * Measures the raw clip and retimes (setpts) to the exact frame-count duration. Audio stripped. */
-export async function fitToWindow(raw: string, startSec: number, endSec: number, out: string, fps = FPS): Promise<string> {
-  fps = Math.trunc(fps || FPS);
-  const s0 = Number(startSec || 0);
-  const s1 = Number(endSec || 0);
-  const nFrames = Math.max(1, Math.round(s1 * fps) - Math.round(s0 * fps));
-  const target = nFrames / fps;
-  const rawDur = (await probeDuration(raw)) || target;
-  let factor = rawDur && rawDur > 0 ? target / rawDur : 1.0;
-  factor = Math.min(8.0, Math.max(0.05, factor));
-  await ffmpeg(['-i', raw, '-vf', `setpts=${factor.toFixed(6)}*PTS,fps=${fps}`, '-frames:v', String(nFrames), ...x264(), '-an', out]);
-  return out;
+/** Pixel dimensions [w, h] of a video's first video stream, or null if unreadable. */
+export async function probeDimensions(p: string): Promise<[number, number] | null> {
+  const r = await run(FFPROBE, ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=s=x:p=0', p]);
+  const m = r.stdout.toString().trim().match(/(\d+)x(\d+)/);
+  return m ? [parseInt(m[1], 10), parseInt(m[2], 10)] : null;
+}
+
+/** Conform a clip to EXACTLY vW×vH (scale-to-fit + centered pad) so mixed-resolution clips — e.g. a legacy
+ * project's cloud clips saved at 1280×720 next to local 832×480 — concatenate cleanly (the concat demuxer
+ * corrupts output on differing dimensions). A NO-OP (returns src, no re-encode) when the clip is already
+ * vW×vH, so the common single-resolution timeline stays lossless. */
+export async function conformClip(src: string, out: string): Promise<string> {
+  const w = vW(), h = vH();
+  const dim = await probeDimensions(src);
+  if (dim && dim[0] === w && dim[1] === h) return src;
+  const vf = `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1`;
+  const ok = await ffmpeg(['-i', src, '-vf', vf, ...x264(), '-an', out]);
+  return ok && fileSize(out) > 0 ? out : src;
 }
 
 // A TTF for drawtext watermarks (failed-scene fill). macOS ships Arial; Linux often dejavu. '' -> skip.

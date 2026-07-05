@@ -22,9 +22,9 @@ function fsReadHeadTail(path: string, size: number): Buffer {
     fs.closeSync(fd);
   }
 }
-import { FPS, probeDuration, toPng, putThumb, fitToWindow, trimToWindow, stillClip, ffmpeg, toWav, lastFrame, concatClips, x264 } from './ffmpeg';
+import { FPS, probeDuration, toPng, putThumb, trimToWindow, stillClip, ffmpeg, toWav, lastFrame, concatClips, x264, conformClip } from './ffmpeg';
 import * as P from './providers';
-import { genVideoLocal, videoModel, localNativeFps, localMaxFrames } from './localVideo';
+import { genVideoLocal, localNativeFps, localMaxFrames } from './localVideo';
 import { ensureSidecar, sidecarPost } from './sidecar';
 import { segmentSong, windowVocalCoverage, windowEnergy } from './segment';
 
@@ -251,17 +251,11 @@ async function storyboard(pid: string, emit: Emit, preview: boolean): Promise<vo
     S.updateProject(pid, { status: 'failed', stage: 'failed', error: "Could not read the song's words (no audible vocals)." });
     throw new Error('no lyrics');
   }
-  // Scenes follow the vocal phrasing (~6s) for BOTH backends. The local model renders each scene as one
-  // continuous shot of chained native sub-clips (renderClip), so longer scenes no longer mean slow-motion —
-  // and the video has fewer cuts. VB_LOCAL_SCENE_SEC can tune the local target.
-  let segOpts = undefined;
-  if (env('VB_VIDEO_BACKEND', 'cloud') === 'local') {
-    // LTX makes one full clip per scene (max ~4s native) — keep scenes under that so trimToWindow fits.
-    // Wan chains sub-clips, so it can take longer scenes (default 6s).
-    const isLtx = videoModel() === 'ltx';
-    const t = parseFloat(env('VB_LOCAL_SCENE_SEC', isLtx ? '3.5' : '6')) || (isLtx ? 3.5 : 6);
-    segOpts = isLtx ? { target: t, maxSec: 3.9, minSec: 2 } : { target: t, maxSec: t * 2, minSec: Math.max(2, t * 0.5) };
-  }
+  // Scenes follow the vocal phrasing (~6s). The Wan model renders each scene as one continuous shot of
+  // chained native sub-clips (renderClip), so longer scenes no longer mean slow-motion — and the video has
+  // fewer cuts. VB_LOCAL_SCENE_SEC can tune the target.
+  const sceneSec = parseFloat(env('VB_LOCAL_SCENE_SEC', '6')) || 6;
+  const segOpts = { target: sceneSec, maxSec: sceneSec * 2, minSec: Math.max(2, sceneSec * 0.5) };
   const segs = segmentSong(words, dur, segOpts).slice(0, MAX_SCENES);
   const n = segs.length;
   const renderTargetN = previewTarget(n, preview);
@@ -426,42 +420,31 @@ async function renderLocalScene(pid: string, k: number, kfFirst: string, clipPro
   return (await concatClips(subs, raw)) ? [true, ''] : [false, 'failed to assemble chained sub-clips'];
 }
 
-async function renderClip(pid: string, k: number, p: any, kfFirst: string, kfLast: string | null, emit: Emit, seed = 42): Promise<[boolean, string]> {
+async function renderClip(pid: string, k: number, p: any, kfFirst: string, emit: Emit, seed = 42): Promise<[boolean, string]> {
   const sc = S.getScene(pid, k) || {};
   const wdur = Math.max(0.4, Number(sc.endSec || 0) - Number(sc.startSec || 0) || 4);
   // The storyboard's per-scene motion direction (explicit camera move + chained subject action) leads the
   // prompt — i2v models default to a timid push-in without an explicit camera instruction, and appearance
   // text is redundant (the start image already fixes the look). Fallback: the generic per-energy phrase.
   const motion = String(sc.motion || '').trim() || P.MOTION[sc.energy || 'medium'] || P.MOTION.medium;
-  const vmodel = p.videoModel || null;
   const raw = S.tmp(`raw_${pid}_${k}.mp4`);
   // Carry the look into the video prompt so the model keeps it (esp. toon — otherwise it can drift realistic).
   const vstyle = p.videoStyle === 'toon'
     ? '3D animated cartoon, Pixar/DreamWorks style, clearly animated, NOT photorealistic'
     : env('VB_VISUAL_STYLE', '');
   const clipPrompt = stripWrittenText(`${motion}. ${sc.prompt || ''}, cinematic${vstyle ? ', ' + vstyle : ''}`);
-  // Three i2v paths: LTX local (first+last-frame morph → smooth flow toward the next keyframe, no sub-clip
-  // chaining needed); Wan local (single start frame → chain sub-clips for a long continuous shot); cloud.
-  const local = env('VB_VIDEO_BACKEND', 'cloud') === 'local';
-  const isLtx = local && videoModel() === 'ltx';
-  const [ok, err] = isLtx
-    ? await genVideoLocal(kfFirst, clipPrompt, raw, wdur, seed, kfLast)
-    : local
-      ? await renderLocalScene(pid, k, kfFirst, clipPrompt, wdur, raw, seed, emit)
-      : await P.genVideo(kfFirst, clipPrompt, raw, wdur, kfLast, vmodel, seed);
+  // Wan renders each scene as one continuous shot: a single start frame per native clip, chained into a
+  // long shot (renderLocalScene) so a long scene has real motion instead of one stretched slow-mo clip.
+  const [ok, err] = await renderLocalScene(pid, k, kfFirst, clipPrompt, wdur, raw, seed, emit);
   if (!ok) {
     const reason = P.isContentBlock(err) ? "This scene was blocked by the model's safety filter." : `Scene render failed: ${(err || '').slice(0, 160)}`;
     putSceneMerged(pid, k, sc, { status: 'failed', error: reason });
     emit({ event: 'scene', index: k, status: 'failed', error: reason });
     return [false, reason];
   }
-  // Local chained clips are already >= the window → TRIM to the exact slot (real speed, never slow-motion).
-  // Cloud clips can be shorter/longer than the window → fitToWindow retimes them to the frame grid.
-  const isLocal = env('VB_VIDEO_BACKEND', 'cloud') === 'local';
+  // Chained clips are already >= the window → TRIM to the exact frame-grid slot (real speed, never slow-mo).
   const sceneOut = S.tmp(`scene_${pid}_${k}.mp4`);
-  const fit = isLocal
-    ? await trimToWindow(raw, sc.startSec || 0, sc.endSec || 0, sceneOut)
-    : await fitToWindow(raw, sc.startSec || 0, sc.endSec || 0, sceneOut);
+  const fit = await trimToWindow(raw, sc.startSec || 0, sc.endSec || 0, sceneOut);
   S.copyIn(fit, `${pid}/clips/scene_${k}.mp4`);
   // Chained 'continue' scenes have no keyframe file (they start from the previous clip's last frame) —
   // give the UI a real thumbnail by grabbing the finished clip's first frame.
@@ -516,7 +499,7 @@ async function renderScenesLocalChained(pid: string, p: any, toRender: number[],
       prevLast = null;
       continue;
     }
-    const [ok] = await renderClip(pid, k, p, start, null, emit);
+    const [ok] = await renderClip(pid, k, p, start, emit);
     prevLast = null;
     if (ok) {
       const clipKey = `${pid}/clips/scene_${k}.mp4`;
@@ -558,25 +541,18 @@ async function renderScenes(pid: string, emit: Emit, cancelled: Cancelled): Prom
   // Reset progress to the keyframe-phase baseline so a resume/re-render doesn't show the previous run's 100%.
   S.updateProject(pid, { status: 'rendering', stage: 'rendering', progress: 0.3, previewScenes: done.size + toRender.length, renderStartedAt: Date.now() / 1000 });
 
-  // Local backends render as a (mostly) continuous chain — the LLM marks each scene cut/continue, a
-  // 'continue' scene starts from the previous scene's last frame, an anti-drift cap forces a fresh keyframe.
-  // LTX joins the chain too now that its first→last morph is opt-in: with morph OFF (the default) the old
-  // exclusion meant 'continue' was silently ignored and every ~3.5s scene started from a fresh keyframe — a
-  // visible pop at each boundary. Only morph-ON LTX keeps the standard path (it needs the keyframe pairs).
-  const localBackend = env('VB_VIDEO_BACKEND', 'cloud') === 'local';
-  const ltxMorph = localBackend && videoModel() === 'ltx' && envBool('VB_LOCAL_LTX_MORPH');
-  if (localBackend && !ltxMorph && envBool('VB_LOCAL_CHAIN', true)) {
+  // Wan renders as a (mostly) continuous chain — the LLM marks each scene cut/continue, a 'continue' scene
+  // starts from the previous scene's last frame, an anti-drift cap forces a fresh keyframe. VB_LOCAL_CHAIN=0
+  // falls back to the parallel per-scene path below (each scene from its own fresh keyframe, no continuity).
+  if (envBool('VB_LOCAL_CHAIN', true)) {
     return renderScenesLocalChained(pid, p, toRender, target, toon, emit, cancelled);
   }
 
-  // keyframe pass — each scene we render + its morph target (next scene's keyframe). Order so all no-ref
-  // (FLUX txt2img) scenes run together and all ref (FLUX Kontext) scenes run together, so a cast-mixed
-  // project swaps the heavy keyframe model at most once instead of thrashing it per scene. Generation
-  // order doesn't affect which keyframes exist, so this is safe for the morph chaining.
+  // keyframe pass — one keyframe per scene we render. Order so all no-ref (FLUX txt2img) scenes run together
+  // and all ref (FLUX Kontext) scenes run together, so a cast-mixed project swaps the heavy keyframe model
+  // at most once instead of thrashing it per scene.
   const hasRef = (k: number) => refsForScene(p, S.getScene(pid, k) || {}).length > 0;
-  const needed = Array.from(new Set([...toRender, ...toRender.filter((k) => k + 1 < n).map((k) => k + 1)])).sort(
-    (a, b) => (hasRef(a) ? 1 : 0) - (hasRef(b) ? 1 : 0) || a - b,
-  );
+  const needed = [...toRender].sort((a, b) => (hasRef(a) ? 1 : 0) - (hasRef(b) ? 1 : 0) || a - b);
   emit({ event: 'stage', stage: 'keyframes', total: needed.length });
   const kfPaths: Record<number, string | null> = {};
   let kfDone = 0;
@@ -598,12 +574,12 @@ async function renderScenes(pid: string, emit: Emit, cancelled: Cancelled): Prom
     }
   }
 
-  // clip pass — render each scene whose keyframe exists. last_frame = next keyframe (morph).
+  // clip pass — render each scene whose keyframe exists.
   const renderable = toRender.filter((k) => kfPaths[k]);
   emit({ event: 'stage', stage: 'clips', total: renderable.length });
   await mapPool(renderable, workers(), async (k) => {
     checkCancel(cancelled);
-    await renderClip(pid, k, p, kfPaths[k]!, kfPaths[k + 1] || null, emit);
+    await renderClip(pid, k, p, kfPaths[k]!, emit);
     const d = S.listScenes(pid).filter((s) => s.status === 'done').length;
     // Clip pass fills 0.5 -> 1 (the keyframe pass took 0.3 -> 0.5).
     S.updateProject(pid, { scenesDone: d, progress: Math.round((0.5 + (0.5 * Math.min(d, target)) / Math.max(1, target)) * 1000) / 1000 });
@@ -688,7 +664,6 @@ const REFRESH_VARIATIONS = [
 
 export async function regenerateScene(pid: string, k: number, emit: Emit): Promise<{ projectId: string; videoKey: string }> {
   const p = S.getProject(pid) || {};
-  const n = Number(p.sceneCount || 0);
   const sc = S.getScene(pid, k);
   if (!sc) throw new Error(`scene ${k} not found`);
   const toon = p.videoStyle === 'toon';
@@ -704,15 +679,14 @@ export async function regenerateScene(pid: string, k: number, emit: Emit): Promi
     S.putScene(pid, k, { status: 'failed', error: 'Keyframe generation failed.', ...keep });
     throw new Error(`keyframe generation failed for scene ${k}`);
   }
-  const lastK = k + 1 < n && S.mediaExists(`${pid}/keyframes/scene_${k + 1}.png`) ? keyframePath(pid, k + 1) : null;
   emit({ event: 'stage', stage: 'clips', total: 1 });
-  const [ok, err] = await renderClip(pid, k, p, fk, lastK, emit);
+  const [ok, err] = await renderClip(pid, k, p, fk, emit);
   if (!ok) {
     S.updateProject(pid, { status: 'failed', stage: 'failed', error: err });
     throw new Error(err);
   }
   if (k > 0 && S.mediaExists(`${pid}/keyframes/scene_${k - 1}.png`)) {
-    await renderClip(pid, k - 1, p, keyframePath(pid, k - 1), fk, emit);
+    await renderClip(pid, k - 1, p, keyframePath(pid, k - 1), emit);
   }
   return assemble(pid, emit);
 }
@@ -795,8 +769,13 @@ async function assemble(pid: string, emit: Emit): Promise<{ projectId: string; v
   }
   S.copyOut(p.audioKey, `${work}/output/song_in`);
   await toWav(`${work}/output/song_in`, `${work}/output/song.wav`);
+  // Conform every clip to vW×vH before the concat. Local Wan clips + failed-scene fills are already this
+  // size (conformClip is a no-op, no re-encode, for those), but archived projects can hold clips saved at a
+  // different native resolution — concatenating mixed dimensions corrupts the output, so normalize first.
+  const normalized: string[] = [];
+  for (let i = 0; i < clips.length; i++) normalized.push(await conformClip(clips[i], `${work}/clips/norm_${i}.mp4`));
   const concat = `${work}/concat.txt`;
-  S.writeText(concat, clips.map((c) => `file '${c.replace(/\\/g, '/')}'`).join('\n') + '\n');
+  S.writeText(concat, normalized.map((c) => `file '${c.replace(/\\/g, '/')}'`).join('\n') + '\n');
   const silent = `${work}/output/silent.mp4`;
   await ffmpeg(['-f', 'concat', '-safe', '0', '-i', concat, ...x264(), '-r', String(FPS), silent]);
 
@@ -805,7 +784,7 @@ async function assemble(pid: string, emit: Emit): Promise<{ projectId: string; v
   // 1) Upscale: local diffusion emits 832×480/896×512 — watched fullscreen that reads soft no matter how
   //    good the denoise was. One Real-ESRGAN pass (sidecar /upscale, Apple GPU — idle by assemble time)
   //    to 1080p. Runs once on the whole timeline: every clip + failed-scene fill shares one size here.
-  if (env('VB_VIDEO_BACKEND', 'cloud') === 'local' && envBool('VB_LOCAL_UPSCALE', true)) {
+  if (envBool('VB_LOCAL_UPSCALE', true)) {
     try {
       await ensureSidecar();
       const up = `${work}/output/upscaled.mp4`;

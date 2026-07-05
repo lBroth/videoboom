@@ -28,9 +28,6 @@ def _handle_i2v(req: dict) -> dict:
     # unified memory (Metal "Insufficient Memory").
     from manager import unload_all
     unload_all()
-    if req.get("engine") == "ltx":
-        from ltx_i2v import run_ltx_i2v  # LTX-2.3, first+last frame morph
-        return run_ltx_i2v(req)
     from wan_i2v import run_i2v          # Wan 2.2 (5B / 14B)
     return run_i2v(req)
 

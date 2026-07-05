@@ -1,6 +1,6 @@
 // Local image-to-video stage: Wan 2.2 I2V-A14B (MLX) via the shared sidecar (see sidecar.ts). Only the
 // video-specific bits live here — the model dir, the Lightning LoRA, and the i2v payload; the process
-// lifecycle + HTTP are reused from sidecar.ts. Used when VB_VIDEO_BACKEND=local.
+// lifecycle + HTTP are reused from sidecar.ts. Video is always on-device (local-only build).
 import path from 'node:path';
 import fs from 'node:fs';
 import { env, envInt, envBool } from './config';
@@ -9,34 +9,27 @@ import { ensureSidecar, sidecarPost, readMarker } from './sidecar';
 
 /** Which local i2v model:
  * '14b' = Wan2.2-I2V-A14B + Lightning 4-step (default — sharp x16 VAE, best quality, no deform; slow),
- * '5b'  = Wan2.2-TI2V-5B (single start frame, fast, but its x64 VAE deforms people),
- * 'ltx' = LTX-2.3 distilled (896x512, fast, weaker i2v motion; first+last morph opt-in). */
-export function videoModel(): 'ltx' | '5b' | '14b' {
-  const m = env('VB_LOCAL_VIDEO_MODEL', '14b');
-  return m === '5b' || m === 'ltx' ? m : '14b';
+ * '5b'  = Wan2.2-TI2V-5B (single start frame, fast, but its x64 VAE deforms people). */
+export function videoModel(): '5b' | '14b' {
+  return env('VB_LOCAL_VIDEO_MODEL', '14b') === '5b' ? '5b' : '14b';
 }
 
-/** Native output fps of the selected local model. The 14B saves at Wan's config sample_fps=16; the 5B and
- * LTX are 24. The pipeline needs this to budget native clip seconds AND to know when to interpolate — a
- * 16fps clip conformed to the 24fps timeline by `fps=24` alone gets every other frame duplicated (judder). */
+/** Native output fps of the selected local model. The 14B saves at Wan's config sample_fps=16; the 5B is
+ * 24. The pipeline needs this to budget native clip seconds AND to know when to interpolate — a 16fps clip
+ * conformed to the 24fps timeline by `fps=24` alone gets every other frame duplicated (judder). */
 export function localNativeFps(): number {
   const m = videoModel();
-  if (m === 'ltx') return envInt('VB_LOCAL_LTX_FPS', 24);
   return envInt('VB_LOCAL_WAN_FPS', m === '5b' ? 24 : 16);
 }
 
 /** Frame cap of the selected local model (the 48GB Metal working-set ceiling at 480p). */
 export function localMaxFrames(): number {
-  const m = videoModel();
-  if (m === 'ltx') return envInt('VB_LOCAL_LTX_MAX_FRAMES', 97);
-  return envInt('VB_LOCAL_MAX_FRAMES', m === '5b' ? 57 : 37);
+  return envInt('VB_LOCAL_MAX_FRAMES', videoModel() === '5b' ? 57 : 37);
 }
 
 /** Converted MLX model dir for the selected model (explicit override, else the setup.sh marker). */
 function modelDir(): string {
-  const m = videoModel();
-  if (m === 'ltx') return env('VB_LOCAL_LTX_DIR') || readMarker('.model-path-ltx');
-  if (m === '5b') return env('VB_LOCAL_WAN_5B_DIR') || readMarker('.model-path-5b');
+  if (videoModel() === '5b') return env('VB_LOCAL_WAN_5B_DIR') || readMarker('.model-path-5b');
   return env('VB_LOCAL_WAN_DIR') || readMarker('.model-path');
 }
 
@@ -50,10 +43,8 @@ function lightningLoras(): { high: string; low: string } | null {
   return fs.existsSync(high) && fs.existsSync(low) ? { high, low } : null;
 }
 
-/** Generate one clip locally. Mirrors providers.genVideo's [ok, err] contract. `endImg` (the next scene's
- * keyframe) is used by the LTX backend as a last-frame morph target for smooth scene-to-scene flow; the Wan
- * backends are single-start-frame and ignore it. */
-export async function genVideoLocal(img: string, prompt: string, outMp4: string, seconds: number, seed = 42, endImg: string | null = null): Promise<[boolean, string]> {
+/** Generate one clip locally (Wan 2.2 5B/14B). Returns an [ok, err] tuple. */
+export async function genVideoLocal(img: string, prompt: string, outMp4: string, seconds: number, seed = 42): Promise<[boolean, string]> {
   const model = videoModel();
   const md = modelDir();
   if (!md || !fs.existsSync(md)) {
@@ -63,36 +54,6 @@ export async function genVideoLocal(img: string, prompt: string, outMp4: string,
     await ensureSidecar();
   } catch (e: any) {
     return [false, e?.message || String(e)];
-  }
-
-  // ── LTX-2.3: first+last frame morph, 896x512, two-stage distilled ──────────────────────────────
-  if (model === 'ltx') {
-    const payload: Record<string, unknown> = {
-      engine: 'ltx',
-      model_dir: md,
-      image: img,
-      prompt,
-      out: outMp4,
-      seconds,
-      fps: envInt('VB_LOCAL_LTX_FPS', 24),
-      width: envInt('VB_LOCAL_LTX_W', 896),   // /64
-      height: envInt('VB_LOCAL_LTX_H', 512),  // /64
-      seed: Math.trunc(seed),
-      max_frames: envInt('VB_LOCAL_LTX_MAX_FRAMES', 97),
-      min_frames: envInt('VB_LOCAL_LTX_MIN_FRAMES', 25),
-    };
-    // Single-image by default (freer, more natural motion). The first+last morph anchors identity at both
-    // ends but reads as slow-motion when the keyframes are close — opt in with VB_LOCAL_LTX_MORPH=1. Identity
-    // is still anchored per-scene by the Kontext keyframe either way. (envBool: '0'/'false' must stay OFF.)
-    if (envBool('VB_LOCAL_LTX_MORPH') && endImg && fs.existsSync(endImg)) payload.end_image = endImg;
-    const dl = envInt('VB_LOCAL_DEADLINE_SEC', 1800) * 1000;
-    try {
-      const r = await sidecarPost('/i2v', payload, dl);
-      if (r.ok && fs.existsSync(outMp4) && fs.statSync(outMp4).size > 0) return [true, ''];
-      return [false, r.error || 'local LTX i2v produced no output'];
-    } catch (e: any) {
-      return [false, `local LTX i2v error: ${e?.message || e}`];
-    }
   }
 
   // ── Wan 2.2 (5B / 14B) ─────────────────────────────────────────────────────────────────────────
