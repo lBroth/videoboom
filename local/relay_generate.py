@@ -1,21 +1,22 @@
-"""Wan2.2 generation pipeline with RELAY-SHEDDING for dual-expert models.
+"""Wan2.2 Text-to-Video generation pipeline for MLX.
 
-Fork of mlx_video.models.wan_2.generate (unmodified copy + minimal diff).
-The Wan2.2 A14B dual model switches experts ONCE at a deterministic timestep
-boundary (high-noise phase then low-noise phase). Stock mlx-video keeps BOTH
-experts resident for the whole denoise (~2x14B, forces quantization on 48GB).
-memory_mode="relay" keeps only the ACTIVE expert resident: build high, run the
-high phase, free it at the boundary, build low. Peak ~ one expert -> A14B bf16
-fits 48GB unified memory. Cost: one extra SSD load at the boundary, per clip.
+Dual-expert (A14B) memory modes: the two experts switch ONCE at a
+deterministic timestep boundary (high-noise phase, then low-noise phase).
+memory_mode="relay" (the default for dual models) keeps only the ACTIVE
+expert resident — build high, run the high phase, free it at the boundary,
+build low. Peak memory ~ one expert instead of two, which makes the A14B
+runnable in bf16 on 48GB unified memory (measured 36.8GB at 832x480x81f,
+44.3GB with CFG). Cost: one extra weight load from disk at the boundary,
+once per generation. memory_mode="parallel" restores both-resident behavior.
 
-Relay changes ONLY when weights are resident, never the math: with the same
-seed the output must match memory_mode="parallel" BIT-IDENTICALLY
-(contract-tested via dump_latents, which saves the final pre-VAE latents).
-To make that guarantee structural, this fork draws the initial noise BEFORE
-any transformer weight loading — a deliberate deviation from stock (which
-draws it after building both experts, making the sample depend on how many
-PRNG draws model construction happens to consume). Same seed therefore gives
-a different — but mode-independent — sample than stock.
+Relay changes only WHEN weights are resident, never the math: with the same
+seed, relay and parallel produce bit-identical latents (contract-tested via
+dump_latents + MD5), and parallel is bit-identical with previous releases —
+relay pre-consumes the construction-time PRNG draws with discarded lazy
+replicas of the loader path, so the initial noise lands on the same stream
+position in every mode. (Known exception: quantized + LoRA in relay mode is
+deterministic but not seed-identical to parallel — the LoRA dequant-merge
+constructs extra layers whose PRNG use depends on the LoRA configs.)
 """
 
 import argparse
@@ -153,6 +154,13 @@ def generate_video(
         FlowMatchEulerScheduler,
         FlowUniPCScheduler,
     )
+
+    # Fail fast on typos: a silently-unknown mode would neither prebuild nor
+    # free experts, degenerating into both-resident with no warning.
+    if memory_mode not in ("auto", "relay", "parallel"):
+        raise ValueError(
+            f"memory_mode must be 'auto', 'relay' or 'parallel', got {memory_mode!r}"
+        )
 
     model_dir = Path(model_dir)
 
@@ -342,15 +350,6 @@ def generate_video(
     w_latent = width // vae_stride[2]
     target_shape = (z_dim, t_latent, h_latent, w_latent)
 
-    # Draw the initial noise HERE, before any weight loading (deliberate
-    # deviation from stock, which draws it after building both experts).
-    # Model construction consumes the global PRNG stream by an amount that
-    # depends on loader internals (layer inits, QuantizedLinear constructors
-    # inside nn.quantize, ...): drawing first makes the sample independent of
-    # all of it, which is what guarantees relay == parallel bit-identically.
-    # Same-seed outputs therefore differ from stock's by design.
-    noise = mx.random.normal(target_shape)
-    mx.eval(noise)
 
     # Sequence length for transformer
     seq_len = math.ceil(
@@ -511,11 +510,10 @@ def generate_video(
         path = model_dir / f"{which}_noise_model.safetensors"
         loras_w = _loras_high if which == "high" else _loras_low
         tb = time.time()
-        # restore_rng=True ONLY for deferred (in-loop) relay builds: those must
-        # not perturb the global PRNG stream (already pre-consumed by the
-        # skeletons). The provider-init builds in parallel mode must CONSUME
-        # the stream exactly like stock — restoring there breaks parity the
-        # other way (found the hard way: first contract test, maxdiff 4.4).
+        # restore_rng=True ONLY for deferred (in-loop) relay builds: those
+        # must not perturb the global PRNG stream. The provider-init builds in
+        # parallel mode must consume the stream normally so parallel keeps the
+        # historical construction-order behavior.
         _saved_rng = None
         if restore_rng:
             try:
@@ -556,13 +554,36 @@ def generate_video(
             if mode == "parallel":
                 self.bundles["low"] = _build_expert("low")
                 self.bundles["high"] = _build_expert("high")
-            # relay: nothing to pre-consume — the initial noise is drawn BEFORE
-            # any construction (see the draw next to target_shape), so PRNG
-            # consumption during builds can no longer influence the sample.
-            # (Two earlier parity attempts that tried to equalize construction
-            # draws both failed: nn.quantize's QuantizedLinear constructors
-            # consume extra RNG, so draw-counting is loader-dependent. runs
-            # relaytest_* in campaign/runs.jsonl are the record.)
+            else:
+                # PRNG parity with stock/parallel: model construction consumes
+                # the global PRNG stream (keyless layer inits AND the
+                # QuantizedLinear constructors inside nn.quantize), and stock
+                # builds BOTH experts between mx.random.seed() and the initial
+                # noise draw. Relay defers the real builds, so pre-consume the
+                # stream with two discarded LAZY replicas of the loader's
+                # construction path (arrays are never evaluated — near-zero
+                # cost). Verified: replica consumption == real-loader
+                # consumption, so the noise (and every output) is bit-exact
+                # with parallel AND with previous releases for the same seed.
+                # Known exception: quantized models + LoRA (the dequant-merge
+                # path constructs additional Linears whose RNG use depends on
+                # the LoRA configs) — relay stays deterministic per-mode there
+                # but same-seed output differs from parallel.
+                import mlx.nn as _nn
+
+                from mlx_video.models.wan_2.convert import _quantize_predicate
+                from mlx_video.models.wan_2.wan_2 import WanModel as _WM
+
+                for _ in ("low", "high"):
+                    _replica = _WM(config)
+                    if quantization:
+                        _nn.quantize(
+                            _replica,
+                            group_size=quantization["group_size"],
+                            bits=quantization["bits"],
+                            class_predicate=lambda p, m: _quantize_predicate(p, m),
+                        )
+                    del _replica
 
         def get(self, timestep_val):
             which = "high" if timestep_val >= boundary else "low"
@@ -618,8 +639,11 @@ def generate_video(
     sched = sched_cls(num_train_timesteps=config.num_train_timesteps)
     sched.set_timesteps(steps, shift=shift)
 
-    # (initial noise already drawn right after target_shape, before any
-    # weight loading — see the PRNG-independence note there)
+    # Generate initial noise — at the SAME stream position as previous
+    # versions (after both experts' construction-time PRNG consumption):
+    # parallel mode is bit-exact with prior releases, and relay pre-consumed
+    # an identical amount via lazy replicas (see _PhaseProvider.__init__).
+    noise = mx.random.normal(target_shape)
 
     # I2V initialization: TI2V-5B blends image with noise, I2V-14B uses pure noise
     if is_i2v_mask_blend:
@@ -1006,6 +1030,23 @@ def main():
         action="store_true",
         help="Print per-temporal-position latent statistics after denoising (diagnostic)",
     )
+    parser.add_argument(
+        "--memory-mode",
+        type=str,
+        default="auto",
+        choices=["auto", "relay", "parallel"],
+        help="Dual-model expert residency: relay = only the active expert in "
+        "memory, swapped once at the phase boundary (fits A14B bf16 on 48GB); "
+        "parallel = both resident. auto (default) = relay for dual models",
+    )
+    parser.add_argument(
+        "--dump-latents",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Save the final pre-VAE latents as float32 .npy (for bitwise "
+        "relay-vs-parallel contract testing)",
+    )
     args = parser.parse_args()
 
     # Parse guide scale
@@ -1046,6 +1087,8 @@ def main():
         no_compile=args.no_compile,
         trim_first_frames=args.trim_first_frames,
         debug_latents=args.debug_latents,
+        memory_mode=args.memory_mode,
+        dump_latents=args.dump_latents,
     )
 
 
