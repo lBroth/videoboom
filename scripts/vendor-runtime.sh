@@ -10,7 +10,7 @@ if [ "$(uname -s)" != "Darwin" ] || [ "$(uname -m)" != "arm64" ]; then
   echo "vendor-runtime: skipped (Apple-Silicon macOS only; on-device engine is macOS-arm64)"; exit 0
 fi
 
-UV_VERSION="${UV_VERSION:-0.9.2}"                 # pinned Astral uv release — bump deliberately
+UV_VERSION="${UV_VERSION:-0.11.17}"               # pinned Astral uv release — bump deliberately
 MLX_VIDEO_COMMIT="${MLX_VIDEO_COMMIT:-87db56a51758fefb748a359b90a5283bb8ba4837}"  # matches local/.venv install
 BIN=build/bin; WHEELS=build/wheels
 mkdir -p "$BIN" "$WHEELS"
@@ -26,20 +26,19 @@ if [ ! -x "$BIN/uv" ]; then
 fi
 UV="$BIN/uv"
 
-# 2. Build the mlx_video wheel from the pinned commit (no git at the user's runtime), + download every other
-#    macOS-arm64 wheel from local/requirements.txt (minus the git URL) into build/wheels.
-echo "==> build mlx_video wheel + download deps (macOS arm64, py3.12)"
-"$UV" pip wheel "git+https://github.com/Blaizzy/mlx-video.git@${MLX_VIDEO_COMMIT}" --wheel-dir "$WHEELS" --python 3.12
-# the runtime deps (torch is a runtime tiny-VAE dep — kept), git line stripped
-grep -vE '^\s*#|git\+' local/requirements.txt > /tmp/req.macos.in
-"$UV" pip download -r /tmp/req.macos.in --dest "$WHEELS" --python 3.12 --only-binary=:all: || \
-  "$UV" pip download -r /tmp/req.macos.in --dest "$WHEELS" --python 3.12   # allow sdists for pure-python
+# 2. Build a wheelhouse: mlx_video from its pinned git commit (no git at the user's runtime) + every runtime
+#    dep as a macOS-arm64 wheel. uv has no `pip wheel`, so use pip's (python3.12 -m pip wheel), which builds
+#    the git/pure-python packages and downloads the binary wheels (torch, mlx, ncnn) into build/wheels.
+echo "==> build wheelhouse (mlx_video @ pinned commit + deps, macOS arm64, py3.12)"
+grep -vE '^\s*#|git\+' local/requirements.txt > /tmp/req.macos.in   # runtime deps, git line stripped (torch kept)
+python3.12 -m pip wheel \
+  "git+https://github.com/Blaizzy/mlx-video.git@${MLX_VIDEO_COMMIT}" \
+  -r /tmp/req.macos.in --wheel-dir "$WHEELS"
 
-# 3. Hash-pinned lock from the resolved set (installed at runtime with --require-hashes --find-links build/wheels).
+# 3. Hash-pinned lock resolved from the local wheelhouse (installed at runtime with --require-hashes).
 echo "==> compile hash-pinned lock -> local/requirements.macos.lock"
-printf 'mlx_video\n' > /tmp/req.macos.full
-cat /tmp/req.macos.in >> /tmp/req.macos.full
-"$UV" pip compile /tmp/req.macos.full --generate-hashes --find-links "$WHEELS" --python 3.12 \
+{ echo mlx_video; cat /tmp/req.macos.in; } > /tmp/req.macos.full
+"$UV" pip compile /tmp/req.macos.full --generate-hashes --find-links "$WHEELS" --no-index --python 3.12 \
   -o local/requirements.macos.lock
 
 echo "==> vendor-runtime done: $(ls "$WHEELS" | wc -l | tr -d ' ') wheels, uv $UV_VERSION, lock written."

@@ -155,7 +155,10 @@ export async function install(emit: Emit): Promise<void> {
     const uvEnv = { ...process.env, ...localEnv(), UV_PYTHON_INSTALL_DIR: uvPythonDir(), UV_CACHE_DIR: uvCacheDir() };
     if (!st.pythonReady) await run(uvBin(), ['python', 'install', '3.12'], uvEnv, 'python', emit);
     if (!st.venvReady) await run(uvBin(), ['venv', venvDir(), '--python', '3.12'], uvEnv, 'venv', emit);
-    await run(uvBin(), ['pip', 'sync', '--python', venvPython(), '--require-hashes', '--find-links', wheelsDir(), lockPath()], uvEnv, 'deps', emit);
+    // --no-index: install PURELY from the .dmg-vendored wheelhouse (the lock was compiled --no-index against
+    // it, so every one of the 121 pins is present). Without it uv treats --find-links as merely additive and
+    // re-downloads most wheels from PyPI — making the shipped 600MB dead weight and the install network-bound.
+    await run(uvBin(), ['pip', 'sync', '--python', venvPython(), '--require-hashes', '--no-index', '--find-links', wheelsDir(), lockPath()], uvEnv, 'deps', emit);
     emit({ event: 'phase', phase: 'harden' });
     await hardenProvisionedTree(venvDir(), uvPythonDir());
     emit({ event: 'phase', phase: 'verify' });
