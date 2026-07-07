@@ -445,7 +445,7 @@ export async function buildStoryboard(pid: string, emit: Emit, cancelled: Cancel
   const toon = p.videoStyle === 'toon';
   const scenes = S.listScenes(pid);
   emit({ event: 'stage', stage: 'keyframes', total: scenes.length });
-  S.updateProject(pid, { status: 'storyboard', stage: 'keyframes', progress: 0.1, renderStartedAt: Date.now() / 1000 });
+  S.updateProject(pid, { status: 'storyboarding', stage: 'keyframes', progress: 0.1, renderStartedAt: Date.now() / 1000 });
   let done = 0;
   for (const s of scenes) {
     if (cancelled()) break;

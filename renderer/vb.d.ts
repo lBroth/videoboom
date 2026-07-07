@@ -15,6 +15,9 @@ export interface Character {
 export interface Scene {
   index: number; status?: string; title?: string; lyric?: string; error?: string;
   startSec?: number; endSec?: number;
+  // authored/editable fields (scene editor)
+  prompt?: string; motion?: string; transition?: 'cut' | 'continue';
+  characters?: string[]; energy?: number; userKeyframe?: boolean;
 }
 export type Stage = 'STT' | 'LLM' | 'VLM' | 'KEYFRAME' | 'VIDEO';
 export type Backend = 'cloud' | 'local';
@@ -71,6 +74,11 @@ export interface VBApi {
   resume(pid: string): Promise<Record<string, unknown>>;
   requality(pid: string): Promise<Record<string, unknown>>;
   regenerateScene(pid: string, index: number): Promise<Record<string, unknown>>;
+  buildStoryboard(pid: string, regenStory?: boolean): Promise<Record<string, unknown>>;
+  renderSelected(pid: string, scenes: number[]): Promise<Record<string, unknown>>;
+  regenerateKeyframe(pid: string, index: number): Promise<Record<string, unknown>>;
+  updateScene(pid: string, index: number, patch: Partial<Scene>): Promise<{ scene: Scene }>;
+  setSceneKeyframe(pid: string, index: number, image: string): Promise<Record<string, unknown>>;
   cancel(opId: string): Promise<boolean>;
   localCapabilities(): Promise<LocalCapabilities>;
   engineState(): Promise<'unsupported' | 'not-bootstrapped' | 'partial' | 'ready'>;

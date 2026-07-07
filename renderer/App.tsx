@@ -40,7 +40,10 @@ const RenderCtx = createContext<{
   startResume: (pid: string) => void;
   startRequality: (pid: string) => void;
   startRegen: (pid: string, index: number) => void;
-}>({ runs: {}, startRender: () => {}, startResume: () => {}, startRequality: () => {}, startRegen: () => {} });
+  startStoryboard: (pid: string, regenStory?: boolean) => void;
+  startRenderSelected: (pid: string, scenes: number[]) => void;
+  startRegenKeyframe: (pid: string, index: number) => void;
+}>({ runs: {}, startRender: () => {}, startResume: () => {}, startRequality: () => {}, startRegen: () => {}, startStoryboard: () => {}, startRenderSelected: () => {}, startRegenKeyframe: () => {} });
 const useRender = () => useContext(RenderCtx);
 
 function RenderProvider({ children }: { children: ReactNode }) {
@@ -53,13 +56,13 @@ function RenderProvider({ children }: { children: ReactNode }) {
       setRuns((r) => {
         const cur = r[pid] || { active: true, label, done: 0 };
         const next: RunState = { ...cur };
-        if (e.event === 'stage') { next.stage = e.stage; if (e.total != null) next.total = e.total; if (e.stage === 'clips') next.done = 0; }
-        else if (e.event === 'scene') next.done = (cur.done || 0) + 1;
+        if (e.event === 'stage') { next.stage = e.stage; if (e.total != null) next.total = e.total; if (e.stage === 'clips' || e.stage === 'keyframes') next.done = 0; }
+        else if (e.event === 'scene' || e.event === 'keyframe') next.done = (cur.done || 0) + 1;
         else if (e.event === 'done') { next.finished = true; if (e.costCents != null) next.cost = e.costCents; }
         else if (e.event === 'error') next.error = e.message;
         return { ...r, [pid]: next };
       });
-      if (e.event === 'scene' || e.event === 'done') { qc.invalidateQueries({ queryKey: ['scenes', pid] }); qc.invalidateQueries({ queryKey: ['projects'] }); }
+      if (e.event === 'scene' || e.event === 'keyframe' || e.event === 'done') { qc.invalidateQueries({ queryKey: ['scenes', pid] }); qc.invalidateQueries({ queryKey: ['projects'] }); }
     });
     op()
       .catch((err: Error) => setRuns((r) => ({ ...r, [pid]: { ...(r[pid] || { label, done: 0 }), active: true, error: String(err?.message || err) } })))
@@ -77,6 +80,9 @@ function RenderProvider({ children }: { children: ReactNode }) {
     startResume: (pid: string) => launch(pid, 'Full song', `render:${pid}`, () => vb.resume(pid)),
     startRequality: (pid: string) => launch(pid, 'Re-render · Quality', `render:${pid}`, () => vb.requality(pid)),
     startRegen: (pid: string, index: number) => launch(pid, `Scene ${index + 1}`, `render:${pid}`, () => vb.regenerateScene(pid, index)),
+    startStoryboard: (pid: string, regenStory?: boolean) => launch(pid, 'Storyboard', `render:${pid}`, () => vb.buildStoryboard(pid, regenStory)),
+    startRenderSelected: (pid: string, scenes: number[]) => launch(pid, `Render ${scenes.length} scene${scenes.length === 1 ? '' : 's'}`, `render:${pid}`, () => vb.renderSelected(pid, scenes)),
+    startRegenKeyframe: (pid: string, index: number) => launch(pid, `Keyframe ${index + 1}`, `render:${pid}`, () => vb.regenerateKeyframe(pid, index)),
   }), [runs, launch]);
 
   return <RenderCtx.Provider value={value}>{children}</RenderCtx.Provider>;
@@ -96,7 +102,8 @@ function runMessage(run?: RunState): string {
   }
 }
 
-const IN_PROGRESS = new Set(['queued', 'storyboarding', 'storyboard', 'rendering', 'refresh']);
+// 'storyboard' is a READY-to-curate state (keyframes done, awaiting the user's scene picks), NOT busy.
+const IN_PROGRESS = new Set(['queued', 'storyboarding', 'rendering', 'refresh']);
 
 // ── tabs ──
 type TabKey = 'create' | 'videos' | 'characters' | 'settings';
@@ -152,13 +159,12 @@ export default function App() {
 // ── Create ──
 function CreateVideo({ onDone }: { onDone: () => void }) {
   const chars = useQuery({ queryKey: ['chars'], queryFn: () => vb.listCharacters() });
-  const { startRender } = useRender();
+  const { startStoryboard } = useRender();
   const [audio, setAudio] = useState<string>('');
   const [name, setName] = useState('');
   const [format, setFormat] = useState<'music-video' | 'ad'>('music-video');
   const [style, setStyle] = useState('cinematic photorealistic music video, dramatic lighting, film grade, shallow depth of field');
   const [mode, setMode] = useState<'realistic' | 'toon'>('realistic');
-  const [scope, setScope] = useState<'preview' | 'full'>('preview');
   const [cast, setCast] = useState<string[]>([]);   // ordered; [0] = lead
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -179,7 +185,8 @@ function CreateVideo({ onDone }: { onDone: () => void }) {
     try {
       const castSpec = cast.map((id, i) => `${id}:${i === 0 ? 'lead' : 'supporting'}`).join(',');
       const { projectId } = await vb.createProject({ audio, name: name || 'Untitled', style, cast: castSpec, quality: 'fast', mode, format });
-      startRender(projectId, scope === 'preview');
+      // Fase A: build the storyboard (prompts + a keyframe per scene, no clips) so the user curates it first.
+      startStoryboard(projectId);
       onDone();
     } catch (e) { setErr(String((e as Error).message || e)); }
     finally { setBusy(false); }
@@ -222,14 +229,11 @@ function CreateVideo({ onDone }: { onDone: () => void }) {
           { value: 'realistic', title: 'Realistic', desc: 'photoreal, cinematic' },
           { value: 'toon', title: 'Animated', desc: '3D cartoon style' },
         ]} />
-        <Segmented label="Scope" value={scope} onChange={setScope} options={[
-          { value: 'preview', title: 'Preview', desc: 'first ~25% — quick & cheap' },
-          { value: 'full', title: 'Full song', desc: 'every scene' },
-        ]} />
         {err && <ErrorNote>{err}</ErrorNote>}
         <Button variant="primary" size="lg" className="w-full" icon={Sparkles} loading={busy} disabled={!audio} onClick={go}>
-          Generate video
+          Genera storyboard
         </Button>
+        <p className="text-xs text-slate-500 text-center -mt-2">Genera prompt + un'immagine per scena. Poi le modifichi e scegli quali rendere in video.</p>
       </Card>
 
       <Card className="p-5">
@@ -333,36 +337,94 @@ function VideoCard({ p }: { p: Project }) {
             <Button size="sm" variant="ghost" icon={Trash2} onClick={del}>Delete</Button>
           </div>
         )}
-        {editing && !active && <SceneEditor pid={p.id} />}
+        {p.status === 'storyboard' && !active &&
+          <div className="text-xs text-slate-400">Storyboard pronto — modifica le scene, poi seleziona quali rendere in video.</div>}
+        {(editing || p.status === 'storyboard') && !active && <SceneEditor pid={p.id} />}
       </div>
     </Card>
   );
 }
 
+// Vertical filmstrip storyboard editor: one row per scene in narrative order. Edit the prompt/motion, re-roll
+// the keyframe image, replace it with your own, and check the scenes to render into clips.
 function SceneEditor({ pid }: { pid: string }) {
-  const { runs, startRegen } = useRender();
+  const { runs, startRenderSelected, startStoryboard } = useRender();
   const scenes = useQuery({ queryKey: ['scenes', pid], queryFn: () => vb.listScenes(pid) });
-  const busy = runs[pid]?.active;
+  const busy = !!runs[pid]?.active;
   const list = scenes.data || [];
+  const [sel, setSel] = useState<Set<number>>(new Set());
+  const toggle = (i: number) => setSel((s) => { const n = new Set(s); if (n.has(i)) n.delete(i); else n.add(i); return n; });
+  const allOn = list.length > 0 && sel.size === list.length;
+  const picks = [...sel].sort((a, b) => a - b);
+
+  if (!list.length) return <div className="text-xs text-slate-500 py-3">Nessuna scena — genera prima lo storyboard.</div>;
   return (
-    <div className="mt-1 grid grid-cols-3 sm:grid-cols-4 gap-2">
-      {list.map((s) => <SceneThumb key={s.index} pid={pid} s={s} disabled={!!busy} onRegen={() => startRegen(pid, s.index)} />)}
+    <div className="mt-2 space-y-2">
+      <div className="flex items-center gap-3 flex-wrap text-xs">
+        <button onClick={() => setSel(allOn ? new Set() : new Set(list.map((s) => s.index)))} className="text-slate-300 hover:text-white hover:underline underline-offset-2">
+          {allOn ? 'Deseleziona tutte' : 'Seleziona tutte'}
+        </button>
+        <span className="text-slate-500">{sel.size}/{list.length} selezionate</span>
+        <div className="flex-1" />
+        <Button size="sm" variant="ghost" icon={RotateCcw} disabled={busy} onClick={() => startStoryboard(pid, true)} title="Rigenera prompt + immagini da capo">Rigenera storyboard</Button>
+        <Button size="sm" variant="primary" icon={Film} disabled={busy || !picks.length} onClick={() => startRenderSelected(pid, picks)}>Render selezionate ({picks.length})</Button>
+      </div>
+      <div className="space-y-2">
+        {list.map((s) => <SceneRow key={s.index} pid={pid} s={s} disabled={busy} selected={sel.has(s.index)} onToggle={() => toggle(s.index)} />)}
+      </div>
     </div>
   );
 }
 
-function SceneThumb({ pid, s, disabled, onRegen }: { pid: string; s: Scene; disabled: boolean; onRegen: () => void }) {
+function SceneRow({ pid, s, disabled, selected, onToggle }: { pid: string; s: Scene; disabled: boolean; selected: boolean; onToggle: () => void }) {
+  const { startRegenKeyframe } = useRender();
+  const qc = useQueryClient();
   const url = useMedia(`${pid}/keyframes/scene_${s.index}_thumb.jpg`, s.status);
+  const [prompt, setPrompt] = useState(s.prompt || '');
+  const [motion, setMotion] = useState(s.motion || '');
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setPrompt(s.prompt || ''); setMotion(s.motion || ''); }, [s.prompt, s.motion]);
+  const dirty = prompt !== (s.prompt || '') || motion !== (s.motion || '');
+
+  const save = async () => {
+    setSaving(true);
+    try { await vb.updateScene(pid, s.index, { prompt, motion }); qc.invalidateQueries({ queryKey: ['scenes', pid] }); }
+    finally { setSaving(false); }
+  };
+  const replace = async () => {
+    const img = await vb.pickImage();
+    if (!img) return;
+    setSaving(true);
+    try { await vb.setSceneKeyframe(pid, s.index, img); qc.invalidateQueries({ queryKey: ['scenes', pid] }); }
+    finally { setSaving(false); }
+  };
+
   return (
-    <button onClick={onRegen} disabled={disabled} title={s.lyric || s.title}
-      className="group relative aspect-video rounded-lg overflow-hidden border border-white/10 bg-black/40 disabled:opacity-50">
-      <Img src={url} className="w-full h-full object-cover" alt={`Scene ${s.index + 1}`} />
-      <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition grid place-items-center">
-        <RotateCcw className="w-4 h-4 text-white" />
+    <div className={cx('flex gap-3 rounded-xl border p-2.5 transition-colors', selected ? 'border-violet-400/60 bg-violet-500/[0.07]' : 'border-white/10')}>
+      <label className="flex items-start pt-1"><input type="checkbox" checked={selected} onChange={onToggle} disabled={disabled} className="accent-violet-500 w-4 h-4" /></label>
+      <div className="relative w-40 shrink-0 aspect-video rounded-lg overflow-hidden border border-white/10 bg-black/40">
+        <Img src={url} className="w-full h-full object-cover" alt={`Scene ${s.index + 1}`} />
+        <span className="absolute bottom-0.5 left-1 text-[10px] text-white/70">#{s.index + 1}</span>
+        {s.status === 'done' && <span className="absolute top-1 right-1"><CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /></span>}
+        {s.status === 'failed' && <span className="absolute top-1 right-1"><AlertTriangle className="w-3.5 h-3.5 text-red-400" /></span>}
       </div>
-      {s.status === 'failed' && <div className="absolute top-1 right-1"><AlertTriangle className="w-3.5 h-3.5 text-red-400" /></div>}
-      <span className="absolute bottom-0.5 left-1 text-[10px] text-white/70">{s.index + 1}</span>
-    </button>
+      <div className="flex-1 min-w-0 space-y-1.5">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium text-slate-200 truncate">{s.title || `Scena ${s.index + 1}`}</span>
+          {s.transition && <span className="text-[10px] uppercase tracking-wide text-slate-500">{s.transition}</span>}
+          <span className="text-[10px] text-slate-500 capitalize ml-auto">{s.status || 'pending'}</span>
+        </div>
+        <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} disabled={disabled} rows={2}
+          className={cx(inputCls, 'text-xs resize-y min-h-[2.5rem]')} placeholder="Prompt della scena" />
+        <input value={motion} onChange={(e) => setMotion(e.target.value)} disabled={disabled}
+          className={cx(inputCls, 'text-xs')} placeholder="Motion (camera + azione)" />
+        <div className="flex items-center gap-2 flex-wrap">
+          <Button size="sm" variant="soft" icon={RotateCcw} disabled={disabled} onClick={() => startRegenKeyframe(pid, s.index)} title="Rigenera l'immagine (nuovo seed)">Rigenera img</Button>
+          <Button size="sm" variant="ghost" icon={ImageIcon} disabled={disabled || saving} onClick={replace}>Sostituisci img</Button>
+          <Button size="sm" variant={dirty ? 'primary' : 'ghost'} icon={CheckCircle2} disabled={disabled || saving || !dirty} onClick={save} loading={saving}>Salva prompt</Button>
+        </div>
+      </div>
+    </div>
   );
 }
 
