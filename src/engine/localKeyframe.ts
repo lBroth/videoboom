@@ -45,7 +45,9 @@ export async function keyframeLocal(prompt: string, outPath: string, refs: [stri
     // resize). settingsEnv sets these per model (LTX 896x512, Wan 832x480); default to LTX.
     width: envInt('VB_LOCAL_KEYFRAME_W', 896),
     height: envInt('VB_LOCAL_KEYFRAME_H', 512),
-    seed: seedFor(outPath),
+    // Deterministic per-scene seed from the output path (so a plain rebuild is stable), UNLESS the editor's
+    // keyframe re-roll set VB_LOCAL_KEYFRAME_SEED to force a genuinely different image.
+    seed: envInt('VB_LOCAL_KEYFRAME_SEED', seedFor(outPath)),
     model: env('VB_LOCAL_KEYFRAME_MODEL', 'dhairyashil/FLUX.1-schnell-mflux-4bit'), // ungated mirror; BFL schnell is HF-gated
   };
   if (ref) {

@@ -31,6 +31,12 @@ export interface VBApi {
   resume(pid: string): Promise<any>;
   requality(pid: string): Promise<any>;
   regenerateScene(pid: string, index: number): Promise<any>;
+  // scene editor (Fase A)
+  buildStoryboard(pid: string, regenStory?: boolean): Promise<any>;
+  renderSelected(pid: string, scenes: number[]): Promise<any>;
+  regenerateKeyframe(pid: string, index: number): Promise<any>;
+  updateScene(pid: string, index: number, patch: Record<string, unknown>): Promise<any>;
+  setSceneKeyframe(pid: string, index: number, image: string): Promise<any>;
   cancel(opId: string): Promise<boolean>;
   // on-device models: capability gate + availability + download (with progress on `download:<STAGE>`)
   localCapabilities(): Promise<any>;
@@ -75,6 +81,11 @@ const api: VBApi = {
   resume: (pid) => ipcRenderer.invoke('render:resume', pid),
   requality: (pid) => ipcRenderer.invoke('render:requality', pid),
   regenerateScene: (pid, index) => ipcRenderer.invoke('scene:regenerate', { pid, index }),
+  buildStoryboard: (pid, regenStory) => ipcRenderer.invoke('storyboard:build', { pid, regenStory }),
+  renderSelected: (pid, scenes) => ipcRenderer.invoke('render:selected', { pid, scenes }),
+  regenerateKeyframe: (pid, index) => ipcRenderer.invoke('scene:regenerateKeyframe', { pid, index }),
+  updateScene: (pid, index, patch) => ipcRenderer.invoke('scene:update', { pid, index, patch }),
+  setSceneKeyframe: (pid, index, image) => ipcRenderer.invoke('scene:setKeyframe', { pid, index, image }),
   cancel: (opId) => ipcRenderer.invoke('op:cancel', opId),
 
   localCapabilities: () => ipcRenderer.invoke('local:capabilities'),

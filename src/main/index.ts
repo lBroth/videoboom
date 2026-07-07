@@ -346,6 +346,26 @@ function registerIpc() {
     guardRender(pid) ?? streamOp('render:' + pid, 'rerender-clips', ['--project', pid], { VB_LOCAL_WAN_STEPS: '20' }, renderNeedsGpu()));
   ipcMain.handle('scene:regenerate', (_e, o: { pid: string; index: number }) =>
     guardRender(o.pid) ?? streamOp('render:' + o.pid, 'regenerate-scene', ['--project', o.pid, '--index', String(o.index)], undefined, renderNeedsGpu()));
+
+  // ── scene editor (Fase A): storyboard keyframes, per-scene edits, subset render ──
+  // Build the whole storyboard the user curates: prompts + a keyframe IMAGE per scene, no clips.
+  ipcMain.handle('storyboard:build', (_e, o: { pid: string; regenStory?: boolean }) =>
+    guardRender(o.pid) ?? streamOp('render:' + o.pid, 'build-storyboard',
+      ['--project', o.pid, ...(o.regenStory ? ['--regen-story'] : [])], undefined, renderNeedsGpu()));
+  // Render clips for only the scenes the user selected, then assemble.
+  ipcMain.handle('render:selected', (_e, o: { pid: string; scenes: number[] }) =>
+    guardRender(o.pid) ?? streamOp('render:' + o.pid, 'render-selected',
+      ['--project', o.pid, '--scenes', (o.scenes || []).join(',')], undefined, renderNeedsGpu()));
+  // Re-roll ONLY one scene's keyframe image (no clip) — cheap iteration on the storyboard.
+  ipcMain.handle('scene:regenerateKeyframe', (_e, o: { pid: string; index: number }) =>
+    guardRender(o.pid) ?? streamOp('render:' + o.pid, 'regenerate-keyframe',
+      ['--project', o.pid, '--index', String(o.index)], undefined, renderNeedsGpu()));
+  // Edit a scene's prompt/motion/title/transition (metadata write, no GPU).
+  ipcMain.handle('scene:update', (_e, o: { pid: string; index: number; patch: Record<string, unknown> }) =>
+    streamOp('edit:' + o.pid, 'update-scene', ['--project', o.pid, '--index', String(o.index), '--patch', JSON.stringify(o.patch || {})]));
+  // Replace a scene's keyframe with a user-supplied image (ffmpeg re-encode, no GPU).
+  ipcMain.handle('scene:setKeyframe', (_e, o: { pid: string; index: number; image: string }) =>
+    streamOp('edit:' + o.pid, 'set-scene-keyframe', ['--project', o.pid, '--index', String(o.index), '--image', o.image || '']));
   ipcMain.handle('op:cancel', (_e, opId: string) => { RUNS.get(opId)?.cancel(); return true; });
 }
 

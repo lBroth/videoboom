@@ -4,6 +4,7 @@
 // Progress is reported through an `emit(event)` callback the engine turns into IPC events.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import path from 'node:path';
 import { env, envInt } from './config';
 import { costTotal } from './cost';
 import * as S from './storage';
@@ -25,7 +26,7 @@ function fsReadHeadTail(path: string, size: number): Buffer {
 }
 import { FPS, probeDuration, toPng, putThumb, stillClip, ffmpeg, toWav, x264, conformClip } from './ffmpeg';
 import * as P from './stages';
-import { assertCastExists } from './backends/sceneShared';
+import { assertCastExists, buildKeyframe, putSceneMerged, keyframePath } from './backends/sceneShared';
 import { ensureSidecar, sidecarPost } from './sidecar';
 import { segmentSong, windowVocalCoverage, windowEnergy } from './segment';
 import type { Emit, Cancelled, SceneRenderCtx } from './backends/types';
@@ -306,18 +307,23 @@ async function storyboard(pid: string, emit: Emit, preview: boolean): Promise<vo
 }
 
 // ── scene render (backend-agnostic) ────────────────────────────────────────────
-async function renderScenes(pid: string, emit: Emit, cancelled: Cancelled): Promise<{ projectId: string; videoKey: string }> {
+async function renderScenes(pid: string, emit: Emit, cancelled: Cancelled, explicit?: number[]): Promise<{ projectId: string; videoKey: string }> {
   const p = S.getProject(pid) || {};
   assertCastExists(pid, p);
   const n = Number(p.sceneCount || 0);
-  const target = Math.min(Number(p.renderTarget || n), n);
   const toon = p.videoStyle === 'toon';
   const scenes = S.listScenes(pid);
   const done = new Set(scenes.filter((s) => s.status === 'done').map((s) => Number(s.index)));
-  const toRender = scenes
-    .filter((s) => Number(s.index) < target && s.status !== 'done')
-    .map((s) => Number(s.index))
-    .sort((a, b) => a - b);
+  // Two selection modes: an EXPLICIT set the user checked in the editor (rendered even if already done, so a
+  // re-render is possible), or the prefix [0..renderTarget) minus already-done (preview/resume/full). Keyframes
+  // for every scene already exist from the storyboard phase, so a non-contiguous subset still morphs to its
+  // real next-scene keyframe on disk.
+  const valid = new Set(scenes.map((s) => Number(s.index)));
+  const target = explicit && explicit.length ? n : Math.min(Number(p.renderTarget || n), n);
+  const toRender = (explicit && explicit.length
+    ? explicit.filter((i) => valid.has(i))
+    : scenes.filter((s) => Number(s.index) < target && s.status !== 'done').map((s) => Number(s.index))
+  ).sort((a, b) => a - b);
   if (!toRender.length) return assemble(pid, emit);
   // Reset progress to the keyframe-phase baseline so a resume/re-render doesn't show the previous run's 100%.
   S.updateProject(pid, { status: 'rendering', stage: 'rendering', progress: 0.3, previewScenes: done.size + toRender.length, renderStartedAt: Date.now() / 1000 });
@@ -425,6 +431,92 @@ export async function regenerateScene(pid: string, k: number, emit: Emit): Promi
     throw new Error(err);
   }
   return assemble(pid, emit);
+}
+
+// ── scene editor: storyboard phase + per-scene edits (Fase A) ─────────────────────
+/** Fase A: produce the full storyboard the user curates — the LLM shot-list (prompts) + a keyframe IMAGE for
+ * EVERY scene, then STOP. No clips, no assemble. A keyframe is ~seconds vs a clip's minutes, so the user
+ * edits prompts / re-rolls keyframes / swaps images here, then renders only the scenes they approve. Reuses a
+ * cached storyboard + existing keyframes (buildKeyframe early-returns a cached file). */
+export async function buildStoryboard(pid: string, emit: Emit, cancelled: Cancelled = never, regenStory = false): Promise<{ projectId: string }> {
+  if (regenStory || !hasValidStoryboard(pid)) await storyboard(pid, emit, false);
+  const p = S.getProject(pid) || {};
+  assertCastExists(pid, p);
+  const toon = p.videoStyle === 'toon';
+  const scenes = S.listScenes(pid);
+  emit({ event: 'stage', stage: 'keyframes', total: scenes.length });
+  S.updateProject(pid, { status: 'storyboard', stage: 'keyframes', progress: 0.1, renderStartedAt: Date.now() / 1000 });
+  let done = 0;
+  for (const s of scenes) {
+    if (cancelled()) break;
+    const k = Number(s.index);
+    const kf = await buildKeyframe(pid, k, p, toon);
+    emit({ event: 'keyframe', index: k, ok: Boolean(kf) });
+    S.updateProject(pid, { progress: 0.1 + 0.85 * (++done / Math.max(1, scenes.length)) });
+  }
+  S.updateProject(pid, { status: 'storyboard', stage: 'storyboard-ready', progress: 1 });
+  return { projectId: pid };
+}
+
+/** Fase B: render clips for an EXPLICIT set of user-selected scenes, reusing their existing keyframes, then
+ * assemble. Selected scenes are reset to pending so a re-render actually redoes them. */
+export async function renderSelected(pid: string, indices: number[], emit: Emit, cancelled: Cancelled = never): Promise<{ projectId: string; videoKey: string }> {
+  const picks = Array.from(new Set(indices.map((i) => Math.trunc(i)))).filter((i) => i >= 0);
+  for (const i of picks) {
+    const s = S.getScene(pid, i);
+    if (s) putSceneMerged(pid, i, s, { status: 'pending' });
+  }
+  S.updateProject(pid, { status: 'rendering', stage: 'rendering', renderStartedAt: Date.now() / 1000 });
+  return renderScenes(pid, emit, cancelled, picks);
+}
+
+/** Re-roll ONLY scene k's keyframe (no clip). Drops the cached file + bumps the keyframe seed so the reroll
+ * differs (the local keyframe seed is otherwise path-derived → identical every time), rebuilds from the
+ * scene's CURRENT prompt. The clip is now stale → scene drops back to pending. */
+export async function regenerateKeyframe(pid: string, k: number, emit: Emit): Promise<{ projectId: string; index: number }> {
+  const p = S.getProject(pid) || {};
+  const sc = S.getScene(pid, k);
+  if (!sc) throw new Error(`scene ${k} not found`);
+  const toon = p.videoStyle === 'toon';
+  try { fs.unlinkSync(keyframePath(pid, k)); } catch { /* no cached keyframe yet */ }
+  const prev = process.env.VB_LOCAL_KEYFRAME_SEED;
+  process.env.VB_LOCAL_KEYFRAME_SEED = String(Math.trunc(Date.now()) % 2_000_000);
+  emit({ event: 'stage', stage: 'keyframes', total: 1 });
+  try {
+    if (!(await buildKeyframe(pid, k, p, toon))) throw new Error('keyframe generation failed');
+  } finally {
+    if (prev === undefined) delete process.env.VB_LOCAL_KEYFRAME_SEED;
+    else process.env.VB_LOCAL_KEYFRAME_SEED = prev;
+  }
+  putSceneMerged(pid, k, sc, { status: 'pending' });
+  emit({ event: 'keyframe', index: k, ok: true });
+  return { projectId: pid, index: k };
+}
+
+/** Edit a scene's authored fields (prompt/motion/title/transition) in place. Invalidates the clip (drops to
+ * pending); the user then re-rolls the keyframe + re-renders. No render here. */
+export async function updateScene(pid: string, k: number, patch: Record<string, unknown>): Promise<{ projectId: string; index: number; scene: any }> {
+  const sc = S.getScene(pid, k);
+  if (!sc) throw new Error(`scene ${k} not found`);
+  const clean: Record<string, unknown> = {};
+  for (const key of ['title', 'prompt', 'motion', 'transition']) if (key in patch) clean[key] = patch[key];
+  putSceneMerged(pid, k, sc, { ...clean, status: 'pending' });
+  return { projectId: pid, index: k, scene: S.getScene(pid, k) };
+}
+
+/** Replace scene k's keyframe with a user-supplied image (absolute path or media key), normalized to PNG at
+ * the scene's keyframe path so i2v + the previous scene's morph use it. Clip drops to pending. */
+export async function setSceneKeyframe(pid: string, k: number, imagePath: string): Promise<{ projectId: string; index: number }> {
+  const sc = S.getScene(pid, k);
+  if (!sc) throw new Error(`scene ${k} not found`);
+  const src = path.isAbsolute(imagePath || '') ? imagePath : S.mediaPath(imagePath || '');
+  if (!imagePath || !fs.existsSync(src)) throw new Error('image not found');
+  const kfAbs = keyframePath(pid, k);
+  S.mkdirp(path.dirname(kfAbs));
+  if (!(await ffmpeg(['-y', '-i', src, kfAbs]))) throw new Error('could not import that image');
+  await putThumb(kfAbs, `${pid}/keyframes/scene_${k}_thumb.jpg`);
+  putSceneMerged(pid, k, sc, { status: 'pending', userKeyframe: true });
+  return { projectId: pid, index: k };
 }
 
 // ── character portrait ──────────────────────────────────────────────────────--

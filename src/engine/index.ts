@@ -86,6 +86,39 @@ async function dispatch(command: string, f: Record<string, string | boolean>, em
       await PL.regenerateScene(pid, index, emit);
       return { projectId: pid, index, costCents: costTotal() };
     }
+    case 'build-storyboard': {
+      const pid = str(f.project);
+      await PL.buildStoryboard(pid, emit, cancelled, Boolean(f['regen-story']));
+      const p = getProject(pid) || {};
+      return { projectId: pid, status: p.status, costCents: costTotal() };
+    }
+    case 'render-selected': {
+      const pid = str(f.project);
+      const scenes = str(f.scenes).split(',').map((x) => parseInt(x, 10)).filter((x) => !Number.isNaN(x));
+      await PL.renderSelected(pid, scenes, emit, cancelled);
+      const p = getProject(pid) || {};
+      return { projectId: pid, status: p.status, videoKey: p.videoKey, costCents: costTotal() };
+    }
+    case 'regenerate-keyframe': {
+      const pid = str(f.project);
+      const index = parseInt(str(f.index, '0'), 10);
+      await PL.regenerateKeyframe(pid, index, emit);
+      return { projectId: pid, index, costCents: costTotal() };
+    }
+    case 'update-scene': {
+      const pid = str(f.project);
+      const index = parseInt(str(f.index, '0'), 10);
+      let patch: Record<string, unknown> = {};
+      try { patch = JSON.parse(str(f.patch, '{}')); } catch { throw new Error('invalid scene patch'); }
+      const r = await PL.updateScene(pid, index, patch);
+      return { projectId: pid, index, scene: r.scene };
+    }
+    case 'set-scene-keyframe': {
+      const pid = str(f.project);
+      const index = parseInt(str(f.index, '0'), 10);
+      await PL.setSceneKeyframe(pid, index, str(f.image));
+      return { projectId: pid, index };
+    }
     case 'get-project':
       return { project: getProject(str(f.project)) };
     default:
