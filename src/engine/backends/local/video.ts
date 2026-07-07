@@ -104,10 +104,13 @@ async function renderScenesLocalChained(pid: string, p: any, toRender: number[],
     run = isCut ? 0 : run + 1;
   });
 
-  // keyframe pass — CUT scenes only; group by ref variant so the heavy keyframe model swaps at most once.
-  const cutScenes = toRender.filter((k) => cut[k]);
+  // keyframe pass — ALL rendered scenes: every scene needs a keyframe so the
+  // PREVIOUS scene can morph toward it (first+last is always on). A CUT scene
+  // also uses its keyframe as its own start; a CONTINUE scene starts from the
+  // real previous last-frame (motion continuity) but is still the morph TARGET
+  // of the scene before it. Group by ref variant so the keyframe model swaps once.
   const hasRef = (k: number) => refsForScene(p, S.getScene(pid, k) || {}).length > 0;
-  const ordered = [...cutScenes].sort((a, b) => (hasRef(a) ? 1 : 0) - (hasRef(b) ? 1 : 0) || a - b);
+  const ordered = [...toRender].sort((a, b) => (hasRef(a) ? 1 : 0) - (hasRef(b) ? 1 : 0) || a - b);
   emit({ event: 'stage', stage: 'keyframes', total: ordered.length });
   const kfPaths: Record<number, string | null> = {};
   await mapPool(ordered, kfWorkers(), async (k) => {
@@ -130,11 +133,11 @@ async function renderScenesLocalChained(pid: string, p: any, toRender: number[],
       prevLast = null;
       continue;
     }
-    // Morph target = the NEXT scene's start keyframe (only if that scene is a CUT with a keyframe
-    // ready), so this scene ends exactly where the next begins → seamless boundary. Continue-next
-    // scenes have no keyframe (they'll chain from this last frame), so no morph target there.
+    // Morph target = the NEXT scene's keyframe (every rendered scene has one now),
+    // so this scene ends exactly where the next begins → seamless boundary +
+    // first+last, always. The final scene has no next keyframe → first-frame only.
     const nextK = k + 1;
-    const morphTo = cut[nextK] ? kfPaths[nextK] || undefined : undefined;
+    const morphTo = kfPaths[nextK] || undefined;
     const [ok] = await renderClip(pid, k, p, start, emit, 42, morphTo);
     prevLast = null;
     if (ok) {
