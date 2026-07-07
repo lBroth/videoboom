@@ -41,6 +41,14 @@ const MAX_SCENES = 60;
 const SYS = 'You are an award-winning music-video director. Output ONLY one valid JSON object.';
 const SYS_AD = 'You are an award-winning commercial/ad director. Output ONLY one valid JSON object.';
 
+// Hard rules injected into BOTH shot lists (ad + music-video). Small local LLMs ignore soft phrasing and
+// re-introduce close-ups inside the MOTION field and readable UI/text on screens — these are the non-negotiable
+// backstops, repeated verbatim in each prompt so the model can't route around them.
+const HARD_FRAMING =
+  '- FRAMING (HARD RULE, no exceptions): NO CLOSE-UPS anywhere — not as a shot, not as a camera end-point in "motion". Never fill the frame with a face, eyes, hands or a single object; never "push in / zoom in / crane to" a close-up. Keep EVERY shot AND every camera move at MEDIUM-to-WIDE distance, the figure roughly full-body and the surrounding scene always visible.';
+const HARD_SCREENS =
+  '- SCREENS & TEXT (HARD RULE — the image model cannot spell, any readable mark comes out garbled): nothing readable may appear anywhere. Monitors, screens, phones, signs and surfaces show ONLY abstract glowing light, soft colour fields or blurred geometric shapes — NEVER readable code, logs, error messages, badges, checkmarks, status bars, dashboards, charts, UI, numbers, labels, captions, a brand/product name, or any letters or symbols. No "Merged" badge, no "error logs", no status text. Render tech, data and energy as light and colour, never as characters.';
+
 /** Shot-list rules for an ad/spot: the product is the hero, benefit-driven, punchy, ends on a CTA. */
 function adShotListPrompt(style: string, bibleBlock: string, momentsBlock: string, n: number, castBlock = ''): string {
   return `BRAND / STYLE: ${style}${bibleBlock}${castBlock}
@@ -66,7 +74,7 @@ RULES:
   (product + brand moment, confident and clean). The LAST shot is the CTA / hero product beat.
 - Ads CAN be punchy and energetic — quick, bold, beat-synced framings, dynamic camera, striking light.
 - People (if any) are aspirational lifestyle talent using/enjoying the product, looking natural and desirable.
-- VARY framing each shot (hero close-up, product-in-context, lifestyle wide, detail macro, dramatic angle).
+- VARY framing each shot (product-in-context, lifestyle wide, detail macro, dramatic angle) — medium to wide, no close-ups.
 - For EVERY shot also write "motion": ONE sentence of pure MOTION direction for the video model — an
   EXPLICIT camera move (dolly in/out, tracking, pan left/right, orbital arc, crane up/down, whip pan) with a
   pace word (slow/steady/brisk/rapid), plus what physically CHANGES across the clip as 2-3 chained beats
@@ -77,6 +85,8 @@ RULES:
   UI text, lettering or brand names as VISIBLE WRITING. The product's name must NEVER appear written
   anywhere — the reference image is the ONLY carrier of branding. Describe every surface, screen, sign and
   package as clean/blank/unbranded. NEVER Asian/foreign signage.
+${HARD_FRAMING}
+${HARD_SCREENS}
 MOMENTS:
 ${momentsBlock}
 
@@ -119,7 +129,8 @@ RULES:
   NEVER backup dancers, never moving "to the beat". They are NOT cast and must never replace or age-up the lead.
 - EXPRESSION: carry the FEELING through subtle face + body acting and the mood/light of the shot, not theatrics.
 - VARY framing, camera move and location each scene (wide, medium, tracking, static) — never repeat the same
-  setup, and NEVER default to dancing. No extreme close-ups.
+  setup, and NEVER default to dancing. NO CLOSE-UPS: no face-filling or extreme close-up shots — hold the
+  camera at MEDIUM-to-WIDE distance so a face is never large in the frame (close-up faces render poorly).
 - FLOW: keep a consistent PALETTE / film-grade / tone across the video so shots morph smoothly — but the
   SETTING follows the words: change location whenever the lyric does (the lyric ALWAYS wins over location
   stability). Never hold a location past the line that justified it.
@@ -137,9 +148,14 @@ RULES:
   chained physical beats (e.g. "she walks toward camera, stops at the window, turns her head to the light").
   Without an explicit camera instruction the video model defaults to a dead push-in. Concrete and physical.
   NEVER "slow motion", never "static shot", no appearance/wardrobe description (the image fixes the look).
-- ABSOLUTELY NO WRITTEN TEXT IN ANY SHOT (the image model cannot spell — rendered words come out garbled):
-  never describe signs with words, labels, captions, lettering or names as visible writing; describe
-  surfaces/signs/screens as clean/blank. NEVER Asian/foreign signage.
+- ABSOLUTELY NO WRITTEN TEXT OR SYMBOLS IN ANY SHOT (the image model cannot spell — rendered words/code come
+  out garbled): never describe words, labels, captions, lettering, names, CODE, digits, glyphs or symbols as
+  visible marks — not on signs or screens, not floating in the air, not as smoke, particles or texture. NO
+  "streams of text", NO "lines of code", NO error messages, NO readable UI. Render code/tech/data ABSTRACTLY
+  — glowing particles, light trails, geometric shapes, colour fields — never actual characters. Describe
+  every surface, sign, screen and terminal as clean/blank/glowing-without-text. NEVER Asian/foreign signage.
+${HARD_FRAMING}
+${HARD_SCREENS}
 MOMENTS:
 ${momentsBlock}
 

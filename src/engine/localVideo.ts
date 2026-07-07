@@ -99,6 +99,9 @@ export async function genVideoLocal(img: string, prompt: string, outMp4: string,
         // low-noise stays 1.0 for detail. VB_LOCAL_LORA_HIGH=1 reverts to the flat-but-safest look.
         payload.lora_strength_high = parseFloat(env('VB_LOCAL_LORA_HIGH', '0.6')) || 0.6;
         payload.lora_strength_low = parseFloat(env('VB_LOCAL_LORA_LOW', '1')) || 1.0;
+        // Lightning is a 4-step distillation — WITHOUT this the sidecar falls back to its 20-step default,
+        // which is ~5x slower AND over-denoises (flat, slow-mo motion). Force 4 unless explicitly overridden.
+        payload.steps = envInt('VB_LOCAL_WAN_STEPS', 4);
       }
     }
     if (env('VB_LOCAL_WAN_STEPS')) payload.steps = envInt('VB_LOCAL_WAN_STEPS', 40);

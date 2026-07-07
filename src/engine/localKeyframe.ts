@@ -8,7 +8,7 @@ import { ensureSidecar, sidecarPost } from './sidecar';
 // Positive phrasing first ("blank, unbranded") — FLUX follows scene description far better than trailing
 // negations, and schnell has no negative-prompt channel at all.
 const NOSIGN =
-  '16:9 widescreen. Every surface, screen, sign and package in the scene is blank and unbranded — zero readable text anywhere. No letters, no words, no captions, no watermark, no logo. No Asian/Chinese/Japanese/Korean signage.';
+  '16:9 widescreen, medium-to-wide framing with the whole scene visible — never a close-up, no face or single object filling the frame. Every surface, screen, monitor, sign and package is blank, glowing and unbranded — zero readable text anywhere: no letters, words, numbers, code, logs, badges, checkmarks, status bars, charts, UI, captions, watermark or logo. Screens show only abstract glowing colour. No Asian/Chinese/Japanese/Korean signage.';
 const TOON = '3D animated movie still, Pixar/DreamWorks style, vibrant stylized cartoon, clearly animated, NOT photorealistic';
 
 /** Stable per-scene seed from the output path so each scene differs but re-renders are deterministic. */
