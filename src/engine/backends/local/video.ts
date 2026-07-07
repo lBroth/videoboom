@@ -28,7 +28,7 @@ import type { VideoBackend, SceneRenderCtx, Emit, Cancelled } from '../types';
  * clip's last frame (the first from the keyframe) — to fill the scene, then concatenate. This fills a long
  * scene with real motion instead of stretching one short clip (slow-motion), so we can use fewer/longer
  * scenes (fewer cuts). A scene that already fits in one native clip just renders directly. */
-async function renderLocalScene(pid: string, k: number, kfFirst: string, clipPrompt: string, wdur: number, raw: string, seed: number, emit: Emit): Promise<[boolean, string]> {
+async function renderLocalScene(pid: string, k: number, kfFirst: string, clipPrompt: string, wdur: number, raw: string, seed: number, emit: Emit, endImg?: string): Promise<[boolean, string]> {
   // Native clip budget from the SELECTED model (the 14B is 16fps — assuming 24 here used to overestimate
   // nativeSec, so chained totals could come out SHORTER than the scene window).
   const fps = Math.max(1, localNativeFps());
@@ -36,7 +36,9 @@ async function renderLocalScene(pid: string, k: number, kfFirst: string, clipPro
   const nSub = Math.max(1, Math.ceil(wdur / nativeSec)); // 1 only when the scene fits one native clip
   // Render native clips (snapped to 4n+1 frames) so the total is always >= the window and renderClip
   // can TRIM (never stretch). A single-clip scene also renders a full native clip, then gets trimmed down.
-  if (nSub <= 1) return genVideoLocal(kfFirst, clipPrompt, raw, nativeSec, seed);
+  // MORPH: only the clip that ENDS the scene targets endImg (the next scene's keyframe) — intermediate
+  // sub-clips chain forward normally.
+  if (nSub <= 1) return genVideoLocal(kfFirst, clipPrompt, raw, nativeSec, seed, endImg);
   // Sub-clips chain (each continues from the prior clip's last frame) so the total covers the scene
   // window — renderClip then TRIMS the excess (no slow-motion). The LAST sub-clip only renders what's
   // left of the window (+ margin for the 4n+1 down-snap): a full native clip there is denoise time the
@@ -47,7 +49,8 @@ async function renderLocalScene(pid: string, k: number, kfFirst: string, clipPro
     const remaining = wdur - i * nativeSec;
     const secs = i === nSub - 1 ? Math.max(1, Math.min(nativeSec, remaining + 0.35)) : nativeSec;
     const subOut = S.tmp(`sub_${pid}_${k}_${i}.mp4`);
-    const [sok, serr] = await genVideoLocal(startImg, clipPrompt, subOut, secs, seed + i);
+    const subEnd = i === nSub - 1 ? endImg : undefined; // last sub-clip morphs to the target
+    const [sok, serr] = await genVideoLocal(startImg, clipPrompt, subOut, secs, seed + i, subEnd);
     if (!sok) return [false, serr];
     subs.push(subOut);
     emit({ event: 'subclip', index: k, sub: i + 1, total: nSub });
@@ -59,7 +62,7 @@ async function renderLocalScene(pid: string, k: number, kfFirst: string, clipPro
   return (await concatClips(subs, raw)) ? [true, ''] : [false, 'failed to assemble chained sub-clips'];
 }
 
-async function renderClip(pid: string, k: number, p: any, kfFirst: string, emit: Emit, seed = 42): Promise<[boolean, string]> {
+async function renderClip(pid: string, k: number, p: any, kfFirst: string, emit: Emit, seed = 42, endImg?: string): Promise<[boolean, string]> {
   const sc = S.getScene(pid, k) || {};
   const wdur = Math.max(0.4, Number(sc.endSec || 0) - Number(sc.startSec || 0) || 4);
   // The storyboard's per-scene motion direction (explicit camera move + chained subject action) leads the
@@ -74,7 +77,8 @@ async function renderClip(pid: string, k: number, p: any, kfFirst: string, emit:
   const clipPrompt = stripWrittenText(`${motion}. ${sc.prompt || ''}, cinematic${vstyle ? ', ' + vstyle : ''}`);
   // Wan renders each scene as one continuous shot: a single start frame per native clip, chained into a
   // long shot (renderLocalScene) so a long scene has real motion instead of one stretched slow-mo clip.
-  const [ok, err] = await renderLocalScene(pid, k, kfFirst, clipPrompt, wdur, raw, seed, emit);
+  // endImg = the next scene's keyframe → the scene morphs toward it (seamless boundary + first+last).
+  const [ok, err] = await renderLocalScene(pid, k, kfFirst, clipPrompt, wdur, raw, seed, emit, endImg);
   if (!ok) {
     const reason = P.isContentBlock(err) ? "This scene was blocked by the model's safety filter." : `Scene render failed: ${(err || '').slice(0, 160)}`;
     putSceneMerged(pid, k, sc, { status: 'failed', error: reason });
@@ -126,7 +130,12 @@ async function renderScenesLocalChained(pid: string, p: any, toRender: number[],
       prevLast = null;
       continue;
     }
-    const [ok] = await renderClip(pid, k, p, start, emit);
+    // Morph target = the NEXT scene's start keyframe (only if that scene is a CUT with a keyframe
+    // ready), so this scene ends exactly where the next begins → seamless boundary. Continue-next
+    // scenes have no keyframe (they'll chain from this last frame), so no morph target there.
+    const nextK = k + 1;
+    const morphTo = cut[nextK] ? kfPaths[nextK] || undefined : undefined;
+    const [ok] = await renderClip(pid, k, p, start, emit, 42, morphTo);
     prevLast = null;
     if (ok) {
       const clipKey = `${pid}/clips/scene_${k}.mp4`;

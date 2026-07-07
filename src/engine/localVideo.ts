@@ -45,7 +45,7 @@ function lightningLoras(): { high: string; low: string } | null {
 }
 
 /** Generate one clip locally (Wan 2.2 5B/14B). Returns an [ok, err] tuple. */
-export async function genVideoLocal(img: string, prompt: string, outMp4: string, seconds: number, seed = 42): Promise<[boolean, string]> {
+export async function genVideoLocal(img: string, prompt: string, outMp4: string, seconds: number, seed = 42, endImg?: string): Promise<[boolean, string]> {
   const model = videoModel();
   const md = modelDir();
   if (!md || !fs.existsSync(md)) {
@@ -75,6 +75,12 @@ export async function genVideoLocal(img: string, prompt: string, outMp4: string,
     max_frames: localMaxFrames(),
     min_frames: envInt('VB_LOCAL_MIN_FRAMES', 21),
   };
+  // First+last morph: the clip interpolates from `img` to `endImg` (the next
+  // scene's keyframe). Honored by the relay fork on both 14B and 5B; ignored
+  // by the stock path. Gated by VB_LOCAL_MORPH (default on).
+  if (endImg && fs.existsSync(endImg) && envBool('VB_LOCAL_MORPH', false)) {
+    payload.end_image = endImg;
+  }
   // VAE tiling stays 'auto': 'none' was benchmarked on this 48GB Mac (2026-07-02) and the 14B run died
   // with Metal "Insufficient Memory" even at 832×480/37f — the untiled working set does NOT fit alongside
   // the transformers. VB_LOCAL_VAE_TILING remains as an experiment override for bigger-memory Macs.

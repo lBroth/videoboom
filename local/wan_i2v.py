@@ -141,15 +141,11 @@ def run_i2v(req: dict) -> dict:
         dmd_steps = fastwan_dmd.patch(fastwan_spec)
         req = dict(req, steps=dmd_steps, guide_scale="1", scheduler="euler")
         req.setdefault("tiling", "aggressive")
-    if use_relay:
-        # Vendored fork of mlx-video's generate (local/relay_generate.py):
-        # bit-identical math (contract-tested vs parallel), only expert
-        # residency differs. Peak measured 36.8GB (Lightning/no-CFG) and
-        # 44.3GB (CFG) for bf16 A14B at 832x480x81f on 48GB.
-        # NOTE: the resident-weights memoization and tiny-VAE patches target
-        # the stock module; resident is incompatible with relay by design
-        # (memoizing both experts defeats the shedding), tiny-VAE is re-wired
-        # below where requested.
+    # Route bf16 dual (relay) AND FastWan through the vendored fork
+    # (local/relay_generate.py): bit-identical math, only expert residency
+    # differs, and it carries the first+last morph (end_image) support that the
+    # stock module lacks. FastWan (single model) runs it in parallel mode.
+    if use_relay or fastwan_spec:
         from relay_generate import generate_video
     else:
         from mlx_video.models.wan_2.generate import generate_video
@@ -214,7 +210,17 @@ def run_i2v(req: dict) -> dict:
         if guide_scale is None:
             guide_scale = "1"   # CFG off (skips the uncond pass → 2x faster per step)
 
+    # First+last morph: when the app supplies a target keyframe (the NEXT
+    # scene's first frame), the clip interpolates image -> end_image. Only the
+    # vendored relay fork handles it (dual channel-concat + 5B mask-blend); the
+    # stock module ignores it, so end_image is honored only on relay/FastWan.
+    end_image = req.get("end_image")
+
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    _gen_kwargs = {}
+    if end_image and (use_relay or fastwan_spec):
+        _gen_kwargs["end_image"] = end_image
+
     generate_video(
         model_dir=model_dir,
         prompt=prompt,
@@ -239,6 +245,7 @@ def run_i2v(req: dict) -> dict:
         trim_first_frames=int(req.get("trim_first_frames", 0)),
         loras_high=loras_high,
         loras_low=loras_low,
+        **_gen_kwargs,
     )
     ok = os.path.exists(out) and os.path.getsize(out) > 0
-    return {"ok": ok, "num_frames": num_frames, "width": width, "height": height, "fps": fps, "steps": steps, "lightning": bool(loras_high or loras_low)}
+    return {"ok": ok, "num_frames": num_frames, "width": width, "height": height, "fps": fps, "steps": steps, "lightning": bool(loras_high or loras_low), "morph": bool(_gen_kwargs.get("end_image"))}

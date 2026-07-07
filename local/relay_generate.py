@@ -106,6 +106,7 @@ def generate_video(
     debug_latents: bool = False,
     memory_mode: str = "auto",
     dump_latents: str | None = None,
+    end_image: str | None = None,
 ):
     """Generate video using Wan pipeline (supports T2V and I2V).
 
@@ -418,15 +419,39 @@ def generate_video(
             )  # [H, W, 3]
             img_chw = img_arr.transpose(2, 0, 1)  # [3, H, W]
 
-            # Build video: first frame = image, rest = zeros -> [3, F, H, W]
+            # Optional END frame (first+last morph): encode the target keyframe
+            # into the last pixel-frame slot so the clip interpolates image->end.
+            end_chw = None
+            if end_image is not None:
+                eimg = Image.open(end_image).convert("RGB")
+                escale = max(width / eimg.width, height / eimg.height)
+                eimg = eimg.resize(
+                    (round(eimg.width * escale), round(eimg.height * escale)), Image.LANCZOS
+                )
+                ex1, ey1 = (eimg.width - width) // 2, (eimg.height - height) // 2
+                eimg = eimg.crop((ex1, ey1, ex1 + width, ey1 + height))
+                end_arr = mx.array(np.array(eimg, dtype=np.float32) / 255.0 * 2.0 - 1.0)
+                end_chw = end_arr.transpose(2, 0, 1)  # [3, H, W]
+
+            # Build video: first frame = image, rest = zeros (last = end if given)
             # Chunked encoding processes 1-frame + 4-frame chunks with temporal caching
-            video = mx.concatenate(
-                [
-                    img_chw[:, None, :, :],
-                    mx.zeros((3, num_frames - 1, height, width)),
-                ],
-                axis=1,
-            )
+            if end_chw is not None:
+                video = mx.concatenate(
+                    [
+                        img_chw[:, None, :, :],
+                        mx.zeros((3, num_frames - 2, height, width)),
+                        end_chw[:, None, :, :],
+                    ],
+                    axis=1,
+                )
+            else:
+                video = mx.concatenate(
+                    [
+                        img_chw[:, None, :, :],
+                        mx.zeros((3, num_frames - 1, height, width)),
+                    ],
+                    axis=1,
+                )
 
             # Encode through Wan2.1 VAE -> [1, z_dim, T_lat, H_lat, W_lat]
             vae_enc = load_vae_encoder(vae_path, config)
@@ -434,11 +459,21 @@ def generate_video(
             mx.eval(z_video)
             z_video = z_video[0]  # [16, T_lat, H_lat, W_lat]
 
-            # Build mask: 1 for first frame, 0 for rest -> rearrange to [4, T_lat, H, W]
-            msk = mx.ones((1, num_frames, h_latent, w_latent))
-            msk = mx.concatenate(
-                [msk[:, :1], mx.zeros((1, num_frames - 1, h_latent, w_latent))], axis=1
-            )
+            # Build mask: 1 for conditioned frames (first, +last if morph), 0 rest
+            if end_chw is not None:
+                msk = mx.concatenate(
+                    [
+                        mx.ones((1, 1, h_latent, w_latent)),
+                        mx.zeros((1, num_frames - 2, h_latent, w_latent)),
+                        mx.ones((1, 1, h_latent, w_latent)),
+                    ],
+                    axis=1,
+                )
+            else:
+                msk = mx.ones((1, num_frames, h_latent, w_latent))
+                msk = mx.concatenate(
+                    [msk[:, :1], mx.zeros((1, num_frames - 1, h_latent, w_latent))], axis=1
+                )
             # Repeat first frame 4x, concat rest: [1, 4 + (F-1), H_lat, W_lat]
             msk = mx.concatenate(
                 [
@@ -457,15 +492,35 @@ def generate_video(
 
             del vae_enc, img_arr, img_chw, video, z_video, msk
         else:
-            # TI2V-5B: encode single image, blend with noise via mask
+            # TI2V-5B: encode image(s), blend with noise via mask
             img_tensor = preprocess_image(image, width, height)
             mx.eval(img_tensor)
 
             vae_enc = load_vae_encoder(vae_path, config)
-            z_img = vae_enc.encode(img_tensor)  # [1, 1, H_lat, W_lat, z_dim]
-            mx.eval(z_img)
-            z_img = z_img[0].transpose(3, 0, 1, 2)  # [z_dim, 1, H_lat, W_lat]
-            i2v_mask, i2v_mask_tokens = build_i2v_mask(target_shape, config.patch_size)
+            z_first = vae_enc.encode(img_tensor)  # [1, 1, H_lat, W_lat, z_dim]
+            mx.eval(z_first)
+            z_first = z_first[0].transpose(3, 0, 1, 2)  # [z_dim, 1, H_lat, W_lat]
+
+            if end_image is not None:
+                # first+last morph: encode target, condition frame 0 AND frame -1
+                end_tensor = preprocess_image(end_image, width, height)
+                z_end = vae_enc.encode(end_tensor)[0].transpose(3, 0, 1, 2)
+                mx.eval(z_end)
+                C, T, H, W = target_shape
+                z_img = mx.concatenate(
+                    [z_first, mx.zeros((C, T - 2, H, W)), z_end], axis=1
+                )  # [z_dim, T_lat, H, W]
+                # mask: 0 (keep) at first AND last, 1 (noise) in between
+                i2v_mask = mx.concatenate(
+                    [mx.zeros((C, 1, H, W)), mx.ones((C, T - 2, H, W)), mx.zeros((C, 1, H, W))],
+                    axis=1,
+                )
+                pt, ph, pw = config.patch_size
+                i2v_mask_tokens = i2v_mask[0, ::pt, ::ph, ::pw].reshape(1, -1)
+                del end_tensor, z_end
+            else:
+                z_img = z_first
+                i2v_mask, i2v_mask_tokens = build_i2v_mask(target_shape, config.patch_size)
 
             del vae_enc, img_tensor
 
