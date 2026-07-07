@@ -45,9 +45,11 @@ export async function keyframeLocal(prompt: string, outPath: string, refs: [stri
     // resize). settingsEnv sets these per model (LTX 896x512, Wan 832x480); default to LTX.
     width: envInt('VB_LOCAL_KEYFRAME_W', 896),
     height: envInt('VB_LOCAL_KEYFRAME_H', 512),
-    // Deterministic per-scene seed from the output path (so a plain rebuild is stable), UNLESS the editor's
-    // keyframe re-roll set VB_LOCAL_KEYFRAME_SEED to force a genuinely different image.
-    seed: envInt('VB_LOCAL_KEYFRAME_SEED', seedFor(outPath)),
+    // Character identity must be STABLE across scenes. With a ref, derive the seed from the REF path (same
+    // lead → same seed in EVERY scene) so the subject doesn't drift scene-to-scene — Kontext holds identity
+    // from the photo and a fixed seed removes the remaining per-scene variation. Without a ref, keep a
+    // per-scene seed for visual variety. The editor's keyframe re-roll still overrides via VB_LOCAL_KEYFRAME_SEED.
+    seed: envInt('VB_LOCAL_KEYFRAME_SEED', seedFor(ref || outPath)),
     model: env('VB_LOCAL_KEYFRAME_MODEL', 'dhairyashil/FLUX.1-schnell-mflux-4bit'), // ungated mirror; BFL schnell is HF-gated
   };
   if (ref) {

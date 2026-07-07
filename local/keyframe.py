@@ -52,8 +52,11 @@ def run_keyframe(req: dict) -> dict:
     img = None
     mode = "txt2img"
     if ref:
-        # Identity injection via FLUX Kontext, ungated mflux mirror (BFL FLUX.1-Kontext-dev is HF-gated).
-        # If it can't load (gating/format), don't fail the scene — fall back to a plain txt2img keyframe.
+        # Identity injection via FLUX Kontext (ungated mflux mirror; BFL FLUX.1-Kontext-dev is HF-gated).
+        # A ref means the caller REQUIRES this exact subject in the scene, so there is NO silent txt2img
+        # fallback: falling back would quietly swap in a DIFFERENT person — the "character changes every
+        # scene" bug. If Kontext fails (e.g. OOM under pipeline memory pressure, or a bad model), raise
+        # loudly so the real cause surfaces instead of shipping a wrong identity.
         try:
             name = req.get("kontext_model", "akx/FLUX.1-Kontext-dev-mflux-4bit")
             base = req.get("kontext_base", "dev")
@@ -64,9 +67,12 @@ def run_keyframe(req: dict) -> dict:
             )
             mode = "kontext"
         except Exception as e:  # noqa: BLE001
-            print(f"[vb-local] kontext unavailable ({str(e)[:120]}); falling back to txt2img", flush=True)
-            img = None
-    if img is None:
+            raise RuntimeError(
+                f"[vb-local] Kontext identity keyframe failed (ref={ref}): {e}. "
+                "Refusing the silent text2img fallback — it would swap the character. "
+                "Fix the Kontext model/memory instead of shipping a wrong identity."
+            ) from e
+    else:
         img = _txt2img_image(req, quant, w, h, seed)
 
     img.save(path=out, overwrite=True)
