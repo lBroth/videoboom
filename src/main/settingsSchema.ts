@@ -24,8 +24,8 @@ export interface Settings {
   // ── on-device knobs (preserved from v2; still emitted for local-resolved stages) ──
   sttLang: string;          // VB_STT_LANG — '' = auto-detect
   workers: number;          // parallel scene render concurrency (video is GPU-serialized, so effectively 1)
-  localVideoModel: '5b' | '14b'; // Fast = FastWan-5B (DMD 3-step, default — published + fits 32GB) / Quality = Wan 14B
-  localQuality: 'fast' | 'hd';   // within-model speed knob (14B: fast = Lightning 4-step, hd = full-step)
+  localVideoModel: '5b' | '14b'; // always '14b' now — FastWan-5B retired (x64 VAE deformed people); field kept for schema/back-compat
+  localQuality: 'fast' | 'hd';   // the user-facing Fast/Quality: fast = 14B Lightning 4-step + tiny-VAE (~2 min/clip), hd = 14B full 40-step master
   localWanDir: string;      // VB_LOCAL_WAN_DIR — '' = read local/.model-path
   onboarded: boolean;       // first-run wizard completed/skipped
 }
@@ -39,7 +39,7 @@ export const DEFAULTS: Settings = {
     keyframeModel: 'google/gemini-3.1-flash-image', videoModel: 'kwaivgi/kling-v3.0-std',
     vlmModel: 'google/gemma-3-12b-it', moderationModel: 'google/gemini-3.5-flash',
   },
-  sttLang: '', workers: 4, localVideoModel: '5b', localQuality: 'fast', localWanDir: '',
+  sttLang: '', workers: 4, localVideoModel: '14b', localQuality: 'fast', localWanDir: '',
   onboarded: false,
 };
 
@@ -77,8 +77,9 @@ export function migrate(raw: any): Settings {
     // ── preserved v2 local fields, verbatim (I4) ──
     sttLang: str(raw?.sttLang, ''),
     workers: Number.isFinite(raw?.workers) ? Number(raw.workers) : DEFAULTS.workers,
-    // explicit '5b'/'14b' preserved; legacy 'ltx'/unset → the current default (5b).
-    localVideoModel: raw?.localVideoModel === '14b' ? '14b' : raw?.localVideoModel === '5b' ? '5b' : DEFAULTS.localVideoModel,
+    // FastWan-5B retired → always Wan 14B, even for a stored '5b' (the x64-VAE 5B deformed people). The
+    // Fast/Quality choice is now the WITHIN-14B localQuality knob below.
+    localVideoModel: '14b',
     localQuality: raw?.localQuality === 'hd' ? 'hd' : 'fast',
     localWanDir: str(raw?.localWanDir, ''),
     onboarded: raw?.onboarded === true,

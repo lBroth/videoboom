@@ -545,11 +545,12 @@ const MODEL_FIELDS: { key: keyof CloudModels; label: string }[] = [
   { key: 'moderationModel', label: 'Moderation model' },
 ];
 
-// Fast/Quality IS the model choice: Fast = FastWan-5B (DMD 3-step draft), Quality = Wan 14B (bf16-relay).
-// Both finish at 1080p (the shot renders at 480p on-device, then interpolates + upscales).
-const VIDEO_MODES: { key: '5b' | '14b'; title: string; sub: string }[] = [
-  { key: '5b', title: 'Fast', sub: 'FastWan-5B · 3-step draft · ~4–5 min/clip' },
-  { key: '14b', title: 'Quality', sub: 'Wan 14B · best detail · slower' },
+// Fast/Quality are two SPEEDS of the same Wan 14B (x16 VAE — holds detail + character identity). Both finish
+// at 1080p (the shot renders at 480p on-device, then interpolates + upscales). FastWan-5B was retired (its
+// x64 VAE deformed people).
+const VIDEO_MODES: { key: 'fast' | 'hd'; title: string; sub: string }[] = [
+  { key: 'fast', title: 'Fast', sub: 'Wan 14B · Lightning 4-step + tiny-VAE · ~2 min/clip' },
+  { key: 'hd', title: 'Quality', sub: 'Wan 14B · full 40-step · max detail · slow (master)' },
 ];
 
 // Cost estimate pill — cloud-only. An all-local render never emits costCents, so this is simply never shown.
@@ -643,11 +644,11 @@ function ModelDownload({ stage, model, size }: { stage: string; model: string; s
 
 // Fast/Quality selector — shown inline on the VIDEO row only when it resolves local.
 function VideoQuality({ settings, patch }: { settings: Settings; patch: (p: Partial<Settings>) => void }) {
-  const mode: '5b' | '14b' = settings.localVideoModel === '5b' ? '5b' : '14b';
+  const mode: 'fast' | 'hd' = settings.localQuality === 'hd' ? 'hd' : 'fast';
   return (
     <div className="grid grid-cols-2 gap-2 pt-1">
       {VIDEO_MODES.map((v) => (
-        <button key={v.key} onClick={() => patch({ localVideoModel: v.key })}
+        <button key={v.key} onClick={() => patch({ localQuality: v.key })}
           className={cx('rounded-lg border px-3 py-2 text-left transition-colors',
             mode === v.key ? 'border-violet-400/60 bg-violet-500/10 text-slate-100' : 'border-white/10 hover:bg-white/[0.03] text-slate-300')}>
           <div className="text-sm font-medium">{v.title}</div><div className="text-xs text-slate-500">{v.sub}</div>

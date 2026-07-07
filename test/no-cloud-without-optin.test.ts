@@ -83,7 +83,7 @@ test('migrate — v2 local-only blob preserves local fields, all stages auto, no
   const s = migrate(v2);
   assert.equal(s.settingsVersion, 3);
   assert.equal(s.sttLang, 'it'); assert.equal(s.workers, 2);
-  assert.equal(s.localVideoModel, '5b'); assert.equal(s.localQuality, 'hd'); assert.equal(s.localWanDir, '/x');
+  assert.equal(s.localVideoModel, '14b'); assert.equal(s.localQuality, 'hd'); assert.equal(s.localWanDir, '/x'); // 5B retired → always 14B
   for (const st of STAGES) assert.equal(s.stages[st].mode, 'auto', `${st} migrates to auto`);
   // a v2 user has no keys ⇒ resolver forces all-local
   const r = resolveConfig(CAPS(true), s, NO_KEYS);
@@ -97,5 +97,5 @@ test('migrate — v1 flat cloud choice does NOT become a cloud pin (I2), local c
   assert.equal(s.stages.LLM.mode, 'auto');   // cloud → auto, NOT a cloud pin
   assert.equal(s.stages.VIDEO.mode, 'auto');
   assert.equal(s.cloud.storyModel, 'x/y');   // legacy flat slug carried into nested cloud
-  assert.equal(s.localVideoModel, '5b');     // absent → default (Fast/FastWan, published + fits 32GB)
+  assert.equal(s.localVideoModel, '14b');    // FastWan-5B retired → always Wan 14B
 });
