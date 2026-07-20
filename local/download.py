@@ -106,14 +106,18 @@ def main() -> None:
     from huggingface_hub.constants import HF_HUB_CACHE
 
     stage = (sys.argv[1] if len(sys.argv) > 1 else "").upper()
-    repos = STAGE_REPOS.get(stage)
-    if not repos:
-        emit({"event": "error", "error": f"unknown stage {stage}"})
-        return
 
-    # VIDEO isn't a plain snapshot — it downloads + converts (mirrors setup.sh).
+    # VIDEO isn't a plain snapshot — it's a per-engine MLX repo, so it has no STAGE_REPOS entry and must be
+    # dispatched BEFORE the repo lookup (which would otherwise reject it as an unknown stage).
     if stage == "VIDEO":
         download_video()
+        return
+
+    # Optional stages (KEYFRAME_KONTEXT) are downloaded on demand, not as a render prerequisite — they
+    # are still plain snapshots, so they share this path.
+    repos = STAGE_REPOS.get(stage) or OPTIONAL_REPOS.get(stage)
+    if not repos:
+        emit({"event": "error", "error": f"unknown stage {stage}"})
         return
 
     api = HfApi()
