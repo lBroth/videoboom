@@ -23,9 +23,14 @@ export function localNativeFps(): number {
   return envInt('VB_LOCAL_WAN_FPS', m === '5b' ? 24 : 16);
 }
 
-/** Frame cap of the selected local model (the 48GB Metal working-set ceiling at 480p). */
+/** Frame cap of the selected local model (the 48GB Metal working-set ceiling at 480p).
+ * 5B: 121 (= 5.0s at its native 24fps). The old cap of 57 was set against the OFFICIAL Wan2.2 VAE, whose
+ * decode dominated the clip (236.7s of 272.1s measured 2026-07-20) and drove the working set. With
+ * taew2_2 tiny-VAE that decode is 0.6s, and 121f at 832x480 was measured repeatedly with no OOM — under
+ * BOTH decoders, so the cap holds even with VB_LOCAL_TINY_VAE=0. A 6s scene now takes 2 sub-clips
+ * instead of 3. */
 export function localMaxFrames(): number {
-  return envInt('VB_LOCAL_MAX_FRAMES', videoModel() === '5b' ? 57 : 37);
+  return envInt('VB_LOCAL_MAX_FRAMES', videoModel() === '5b' ? 121 : 37);
 }
 
 /** Converted MLX model dir for the selected model (explicit override, else the setup.sh marker). */
@@ -85,9 +90,10 @@ export async function genVideoLocal(img: string, prompt: string, outMp4: string,
   // with Metal "Insufficient Memory" even at 832×480/37f — the untiled working set does NOT fit alongside
   // the transformers. VB_LOCAL_VAE_TILING remains as an experiment override for bigger-memory Macs.
   payload.tiling = env('VB_LOCAL_VAE_TILING', 'auto');
-  // Tiny-VAE decode (TAEHV taew2_1, torch-MPS): 62s → 2.7s measured, quality user-approved (2026-07-02).
+  // Tiny-VAE decode (TAEHV, torch-MPS): 14B/16ch via taew2_1, 62s → 2.7s measured, quality user-approved
+  // (2026-07-02); 5B/48ch via taew2_2, where the official decode is 134.3s of a 165.7s clip.
   // Default ON for the fast path; 'hd' keeps the official VAE (its whole point is maximum fidelity).
-  // Only the 16ch (14B) VAE is ever replaced — see local/tiny_vae.py. VB_LOCAL_TINY_VAE=0 to disable.
+  // See local/tiny_vae.py. VB_LOCAL_TINY_VAE=0 to disable.
   payload.tiny_vae = envBool('VB_LOCAL_TINY_VAE', !isHd) ? 1 : 0;
   if (is5b) {
     // Single-DiT 5B: no Lightning LoRA (incompatible); run native steps (10 ≈ best speed/quality) with the

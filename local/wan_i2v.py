@@ -145,7 +145,8 @@ def run_i2v(req: dict) -> dict:
     # (local/relay_generate.py): bit-identical math, only expert residency
     # differs, and it carries the first+last morph (end_image) support that the
     # stock module lacks. FastWan (single model) runs it in parallel mode.
-    if use_relay or fastwan_spec:
+    via_relay = bool(use_relay or fastwan_spec)
+    if via_relay:
         from relay_generate import generate_video
     else:
         from mlx_video.models.wan_2.generate import generate_video
@@ -159,14 +160,15 @@ def run_i2v(req: dict) -> dict:
         _ensure_resident()
     _set_wired_limit()
 
-    # Tiny-VAE decode (TAEHV taew2_1 on torch-MPS): ~62s official decode -> seconds, near-official quality.
-    # Opt-in until the A/B verdict; only affects the 16ch (14B) VAE — see tiny_vae.py.
+    # Tiny-VAE decode (TAEHV on torch-MPS): official decode -> seconds, near-official quality. Covers the
+    # 16ch (14B/2.1) VAE via taew2_1 and the 48ch (5B/2.2) VAE via taew2_2 — see tiny_vae.py.
     if int(req.get("tiny_vae", os.environ.get("VB_LOCAL_TINY_VAE", "0"))):
         import tiny_vae
         tiny_vae.patch()
-        if use_relay:
-            # tiny_vae patches the STOCK module's loader; mirror it onto the
-            # relay fork so the shim applies there too.
+        if via_relay:
+            # tiny_vae patches the STOCK module's loader; mirror it onto the relay fork so the shim
+            # applies there too. This must follow `via_relay`, not `use_relay`: FastWan (5B) also runs
+            # through the fork, and it is the path where the official decode actually dominates.
             import relay_generate
             from mlx_video.models.wan_2 import generate as _stock_gen
             relay_generate.load_vae_decoder = _stock_gen.load_vae_decoder
