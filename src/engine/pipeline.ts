@@ -60,7 +60,7 @@ RULES:
 - THE PRODUCT IS THE HERO. If a SUBJECT/PRODUCT reference is given (cast index 0), it appears in EVERY
   SINGLE shot — include index 0 in every scene's "characters" list. Hero framing, the product/mascot in
   action, the result it delivers. Refer to it ONLY by its name/role; its reference photo defines its EXACT
-  look — never invent, alter, or restyle it.
+  look — never invent, alter, or restyle it. Always set "shot" to "character": a spot has no empty frames.
 - EVERY SHOT NEEDS BIG, READABLE MOTION (critical — static shots kill the spot): the mascot dashes, leaps,
   spins, sweeps ACROSS the frame; objects visibly transform, fly, or cascade; the camera moves decisively
   (fast dolly, whip pan, orbit, crane). This is an animated commercial — exaggerated cartoon motion is
@@ -121,6 +121,10 @@ RULES:
   where the story/lyrics support it; keep it to at most 3 people in one shot. In the prompt refer to a
   present character ONLY by name + role (e.g. "Debora, the mother") — NEVER invent, age, or alter their
   face, hair, age, skin or clothing; the reference photo defines their look. If no roster, use [0].
+- SHOT TYPE: set "shot" to "environment" when NO cast member is in frame at all — a pure location, texture
+  or mood image (the norm for INSTRUMENTAL moments), and leave "characters" as []. Otherwise set "shot" to
+  "character". Be honest here: a shot you describe as empty ("no one is visible", "only the environment")
+  MUST be "environment", or the character gets composited in against your own description.
 - CINEMATIC FILM, NOT A PERFORMANCE (critical for a real, non-fake look): shoot it like cinema, not a
   stage. The subject does NOT dance, lip-sync, or perform to camera. Energy comes from the CAMERA and the
   ENVIRONMENT (camera movement, light, weather, location, atmosphere) while the person stays natural —
@@ -277,9 +281,20 @@ async function storyboard(pid: string, emit: Emit, preview: boolean): Promise<vo
   scenes.forEach((s, k) => {
     const st = Math.round(wins[k][0] * 100) / 100;
     const en = Math.round(wins[k][1] * 100) / 100;
-    const idxs: number[] = s.characters || [0];
-    let ids = idxs.filter((i) => Number.isInteger(i) && i >= 0 && i < cast.length).map((i) => cast[i].id);
-    if (!ids.length && cast.length) ids = [cast[0].id];
+    // An "environment" shot has NOBODY in frame, so it must NOT get the lead re-injected below — the
+    // keyframe stage would otherwise composite the character into a scene the storyboard describes as
+    // empty (observed: a shot written as "no characters are visible yet" rendered with the lead standing
+    // in it), and it would pay for Kontext (36.7s) instead of schnell (8.0s) to do it.
+    // Backstop for local LLMs, which get the schema as advisory text and may drop `shot`: an EXPLICITLY
+    // empty characters list on an instrumental moment means the same thing. `null` (field absent) is not
+    // the same as `[]` (declared empty), so keep them distinct. Ads always have the product in frame.
+    const declared: number[] | null = Array.isArray(s.characters) ? s.characters : null;
+    const instrumental = !(snippets[k] || '').trim() || coverage[k] < 0.15;
+    const envOnly = format !== 'ad'
+      && (s.shot === 'environment' || (declared !== null && !declared.length && instrumental));
+    const idxs: number[] = declared ?? [0];
+    let ids = envOnly ? [] : idxs.filter((i) => Number.isInteger(i) && i >= 0 && i < cast.length).map((i) => cast[i].id);
+    if (!envOnly && !ids.length && cast.length) ids = [cast[0].id];
     S.putScene(pid, k, {
       title: s.title || `Scene ${k + 1}`,
       prompt: s.prompt,
@@ -289,6 +304,7 @@ async function storyboard(pid: string, emit: Emit, preview: boolean): Promise<vo
       energy: energies[k],
       lyric: (snippets[k] || '').slice(0, 200),
       characters: ids,
+      shot: envOnly ? 'environment' : 'character',
       transition: k === 0 ? 'cut' : s.transition === 'continue' ? 'continue' : 'cut',
       status: 'pending',
     });
@@ -393,7 +409,7 @@ export async function rerenderClips(pid: string, emit: Emit, cancelled: Cancelle
   for (const s of scenes) {
     if (s.status !== 'done') continue;
     const keep: Record<string, unknown> = {};
-    for (const x of ['title', 'prompt', 'motion', 'startSec', 'endSec', 'energy', 'lyric', 'characters', 'transition']) if (x in s) keep[x] = s[x];
+    for (const x of ['title', 'prompt', 'motion', 'startSec', 'endSec', 'energy', 'lyric', 'characters', 'shot', 'transition']) if (x in s) keep[x] = s[x];
     S.putScene(pid, Number(s.index), { status: 'pending', ...keep }); // keep keyframe + meta; clip will redo
   }
   const target = Math.max(...doneIdx) + 1;
@@ -417,7 +433,7 @@ export async function regenerateScene(pid: string, k: number, emit: Emit): Promi
   const toon = p.videoStyle === 'toon';
   S.updateProject(pid, { status: 'rendering', stage: 'refresh', progress: 0.3, renderStartedAt: Date.now() / 1000 });
   const keep: Record<string, unknown> = {};
-  for (const x of ['title', 'prompt', 'motion', 'startSec', 'endSec', 'energy', 'lyric', 'characters', 'transition']) if (x in sc) keep[x] = sc[x];
+  for (const x of ['title', 'prompt', 'motion', 'startSec', 'endSec', 'energy', 'lyric', 'characters', 'shot', 'transition']) if (x in sc) keep[x] = sc[x];
   S.putScene(pid, k, { status: 'pending', ...keep });
 
   const vary = REFRESH_VARIATIONS[Math.trunc(Date.now() / 1000) % REFRESH_VARIATIONS.length];
@@ -499,7 +515,7 @@ export async function updateScene(pid: string, k: number, patch: Record<string, 
   const sc = S.getScene(pid, k);
   if (!sc) throw new Error(`scene ${k} not found`);
   const clean: Record<string, unknown> = {};
-  for (const key of ['title', 'prompt', 'motion', 'transition']) if (key in patch) clean[key] = patch[key];
+  for (const key of ['title', 'prompt', 'motion', 'shot', 'transition']) if (key in patch) clean[key] = patch[key];
   putSceneMerged(pid, k, sc, { ...clean, status: 'pending' });
   return { projectId: pid, index: k, scene: S.getScene(pid, k) };
 }

@@ -51,6 +51,11 @@ function castRoles(p: any): Record<string, string> {
 export function refsForScene(p: any, scene: any): [string, string][] {
   const roles = castRoles(p);
   const leadId = Object.keys(roles)[0] || null;
+  // Nobody in frame: return no refs at all. Without this the lead fallback below re-injects the hero into
+  // a shot the storyboard describes as empty — an identity model's job is to PLACE the reference person,
+  // so handing it a characterless scene puts one there regardless of the prompt. Absent `shot` (every
+  // project stored before this field existed) is falsy here, so old data keeps the previous behavior.
+  if (scene.shot === 'environment') return [];
   let cids: string[] = (scene.characters || []).filter(Boolean);
   if (!cids.length && leadId) cids = [leadId];
   const cap = envInt('VB_MAX_SUBJECTS', 4);
