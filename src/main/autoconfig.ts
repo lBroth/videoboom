@@ -4,8 +4,9 @@
 //   I1 no key ⇒ local (first, un-overridable)   I2 key ⇒ still local by default (cloud is explicit opt-in)
 //   I3 tier never enables cloud                  I4 zero-key users stay fully local
 // Types are imported type-only, so this module has no runtime deps (no electron) and is unit-testable.
-// Not yet wired into sidecarEnv — that lands at C5.
+// Wired into sidecarEnv() in main/index.ts — every engine op is spawned with the env this resolver emits.
 import { STAGES } from './settingsSchema';
+import { TIMELINE_RES } from '../shared/videoRes';
 import type { Settings, Stage, StageSelection, Backend } from './settingsSchema';
 import type { LocalCapabilities } from './localModels';
 
@@ -64,10 +65,12 @@ function toEnv(stages: Record<Stage, ResolvedStage>, settings: Settings): Record
   env.VB_OR_VIDEO_MODEL = settings.cloud.videoModel;
   env.VB_VLM_MODEL = settings.cloud.vlmModel;
   env.VB_MODERATION_MODEL = settings.cloud.moderationModel;
-  // Timeline resolution follows the VIDEO backend (local Wan 832×480; cloud Kling 1280×720).
+  // Timeline resolution follows the VIDEO backend. The numbers live in shared/videoRes.ts, which the engine
+  // backends' timelineRes() reads too — the two must not drift apart.
   const videoLocal = stages.VIDEO.backend === 'local';
-  env.VB_W = videoLocal ? '832' : '1280';
-  env.VB_H = videoLocal ? '480' : '720';
+  const res = videoLocal ? TIMELINE_RES.local : TIMELINE_RES.cloud;
+  env.VB_W = String(res.w);
+  env.VB_H = String(res.h);
   // GPU serialization only when the video stage runs locally (one Wan run saturates unified memory).
   env.VB_WORKERS = videoLocal ? '1' : String(settings.workers || 4);
   // A local keyframe matches the timeline so it isn't resized into the clip.

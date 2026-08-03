@@ -20,6 +20,7 @@ import {
   checkCancel,
   workers,
 } from '../backends/sceneShared';
+import { TIMELINE_RES } from '../../shared/videoRes';
 import type { VideoBackend, SceneRenderCtx, Emit } from '../backends/types';
 
 const CLIP_MIN_SEC = 3;
@@ -199,7 +200,7 @@ export const cloudVideo: VideoBackend = {
     return [true, ''];
   },
 
-  timelineRes: () => ({ w: 1280, h: 720 }),
+  timelineRes: () => TIMELINE_RES.cloud,
   needsUpscale: () => false,
   needsGpu: () => false,
 };

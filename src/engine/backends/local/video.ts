@@ -6,7 +6,7 @@
 // per native sub-clip, chained from the previous clip's real last frame; the clip is TRIMMED to the frame
 // grid (never stretched). See DUAL_BACKEND_PLAN.md §1.7.
 import { env, envInt, envBool } from '../../config';
-import { lastFrame, concatClips } from '../../ffmpeg';
+import { lastFrame, concatClips, matchLevels } from '../../ffmpeg';
 import * as P from '../../stages';
 import * as S from '../../storage';
 import { genVideoLocal, localNativeFps, localMaxFrames } from '../../localVideo';
@@ -22,13 +22,14 @@ import {
   workers,
   kfWorkers,
 } from '../sceneShared';
+import { TIMELINE_RES } from '../../../shared/videoRes';
 import type { VideoBackend, SceneRenderCtx, Emit, Cancelled } from '../types';
 
 /** Render a local scene as ONE continuous shot: chain native-length sub-clips — each i2v from the previous
  * clip's last frame (the first from the keyframe) — to fill the scene, then concatenate. This fills a long
  * scene with real motion instead of stretching one short clip (slow-motion), so we can use fewer/longer
  * scenes (fewer cuts). A scene that already fits in one native clip just renders directly. */
-async function renderLocalScene(pid: string, k: number, kfFirst: string, clipPrompt: string, wdur: number, raw: string, seed: number, emit: Emit, endImg?: string): Promise<[boolean, string]> {
+async function renderLocalScene(pid: string, k: number, kfFirst: string, clipPrompt: string, wdur: number, raw: string, seed: number, emit: Emit, endImg?: string, anchor: string | null = null): Promise<[boolean, string]> {
   // Native clip budget from the SELECTED model (the 14B is 16fps — assuming 24 here used to overestimate
   // nativeSec, so chained totals could come out SHORTER than the scene window).
   const fps = Math.max(1, localNativeFps());
@@ -55,14 +56,21 @@ async function renderLocalScene(pid: string, k: number, kfFirst: string, clipPro
     subs.push(subOut);
     emit({ event: 'subclip', index: k, sub: i + 1, total: nSub });
     if (i < nSub - 1) {
-      const lf = await lastFrame(subOut, S.tmp(`lf_${pid}_${k}_${i}.png`));
+      let lf = await lastFrame(subOut, S.tmp(`lf_${pid}_${k}_${i}.png`));
+      // Anti-drift: this frame was GENERATED (and re-encoded), and the next sub-clip is generated from it —
+      // exposure/saturation error compounds link by link with nothing bounding it (VB_LOCAL_CHAIN_MAX caps
+      // the chain across SCENES, never within one). A clamped pull back toward the scene's anchor keyframe
+      // is a no-op while there is no drift, so it costs nothing on short scenes.
+      if (lf && anchor && envBool('VB_LOCAL_CHAIN_MATCH', true)) {
+        lf = await matchLevels(lf, anchor, S.tmp(`lfm_${pid}_${k}_${i}.png`));
+      }
       if (lf) startImg = lf; // continue the motion from the last frame
     }
   }
   return (await concatClips(subs, raw)) ? [true, ''] : [false, 'failed to assemble chained sub-clips'];
 }
 
-async function renderClip(pid: string, k: number, p: any, kfFirst: string, emit: Emit, seed = 42, endImg?: string): Promise<[boolean, string]> {
+async function renderClip(pid: string, k: number, p: any, kfFirst: string, emit: Emit, seed = 42, endImg?: string, anchor: string | null = null): Promise<[boolean, string]> {
   const sc = S.getScene(pid, k) || {};
   const wdur = Math.max(0.4, Number(sc.endSec || 0) - Number(sc.startSec || 0) || 4);
   // The storyboard's per-scene motion direction (explicit camera move + chained subject action) leads the
@@ -77,8 +85,13 @@ async function renderClip(pid: string, k: number, p: any, kfFirst: string, emit:
   const clipPrompt = stripWrittenText(`${motion}. ${sc.prompt || ''}, cinematic${vstyle ? ', ' + vstyle : ''}`);
   // Wan renders each scene as one continuous shot: a single start frame per native clip, chained into a
   // long shot (renderLocalScene) so a long scene has real motion instead of one stretched slow-mo clip.
-  // endImg = the next scene's keyframe → the scene morphs toward it (seamless boundary + first+last).
-  const [ok, err] = await renderLocalScene(pid, k, kfFirst, clipPrompt, wdur, raw, seed, emit, endImg);
+  // Two independent conditioning inputs, and they are not interchangeable:
+  //   endImg = the NEXT scene's keyframe, fed to the model as end_image so the scene morphs toward it
+  //            (seamless boundary + first+last). Only the sub-clip that ENDS the scene gets it.
+  //   anchor = the still we pull EXTRACTED last frames back toward with matchLevels, to bound exposure/
+  //            saturation drift along a chain. It is the scene's own keyframe, or the anchor of the CUT
+  //            scene that started the run, so a whole run stays on one look.
+  const [ok, err] = await renderLocalScene(pid, k, kfFirst, clipPrompt, wdur, raw, seed, emit, endImg, anchor || kfFirst);
   if (!ok) {
     const reason = P.isContentBlock(err) ? "This scene was blocked by the model's safety filter." : `Scene render failed: ${(err || '').slice(0, 160)}`;
     putSceneMerged(pid, k, sc, { status: 'failed', error: reason });
@@ -122,10 +135,14 @@ async function renderScenesLocalChained(pid: string, p: any, toRender: number[],
   // clip pass — SEQUENTIAL: a continue scene starts from the previous scene's last frame.
   emit({ event: 'stage', stage: 'clips', total: toRender.length });
   let prevLast: string | null = null;
+  // The look every scene in the current run is pulled back toward: the keyframe of the CUT scene that
+  // opened the run. Reset at each cut, so a deliberate new look never gets dragged toward the previous one.
+  let anchor: string | null = null;
   for (const k of toRender) {
     checkCancel(cancelled);
     let start = cut[k] ? kfPaths[k] : prevLast;
     if (!start) start = await buildKeyframe(pid, k, p, toon); // chain broke (or keyframe failed) → fresh keyframe
+    if (cut[k]) anchor = start || null;
     const sc = S.getScene(pid, k) || {};
     if (!start) {
       putSceneMerged(pid, k, sc, { status: 'failed', error: 'Could not get a start frame for this scene.' });
@@ -136,13 +153,16 @@ async function renderScenesLocalChained(pid: string, p: any, toRender: number[],
     // Morph target = the NEXT scene's keyframe (every rendered scene has one now),
     // so this scene ends exactly where the next begins → seamless boundary +
     // first+last, always. The final scene has no next keyframe → first-frame only.
-    const nextK = k + 1;
-    const morphTo = kfPaths[nextK] || undefined;
-    const [ok] = await renderClip(pid, k, p, start, emit, 42, morphTo);
+    const morphTo = kfPaths[k + 1] || undefined;
+    const [ok] = await renderClip(pid, k, p, start, emit, 42, morphTo, anchor);
     prevLast = null;
     if (ok) {
       const clipKey = `${pid}/clips/scene_${k}.mp4`;
       if (S.mediaExists(clipKey)) prevLast = await lastFrame(S.mediaPath(clipKey), S.tmp(`chain_last_${pid}_${k}.png`));
+      // Same clamped anti-drift correction as the within-scene chain, at the scene seam.
+      if (prevLast && anchor && envBool('VB_LOCAL_CHAIN_MATCH', true)) {
+        prevLast = await matchLevels(prevLast, anchor, S.tmp(`chain_lastm_${pid}_${k}.png`));
+      }
     }
     const d = S.listScenes(pid).filter((s) => s.status === 'done').length;
     S.updateProject(pid, { scenesDone: d, progress: Math.round((0.3 + (0.6 * Math.min(d, target)) / Math.max(1, target)) * 1000) / 1000 });
@@ -220,7 +240,7 @@ export const localVideo: VideoBackend = {
     return [true, ''];
   },
 
-  timelineRes: () => ({ w: 832, h: 480 }),
+  timelineRes: () => TIMELINE_RES.local,
   // Real-ESRGAN → 1080 finish. VB_LOCAL_UPSCALE=0 opts a power user out (preserves the pre-C4 gate).
   needsUpscale: () => envBool('VB_LOCAL_UPSCALE', true),
   needsGpu: () => true,
