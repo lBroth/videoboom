@@ -138,7 +138,13 @@ export function downloadModel(stage: string, onEvent: (e: any) => void): Downloa
   }
   let child: ChildProcess;
   try {
-    child = spawn(py, [path.join(codeDir(), 'download.py'), stage], { cwd: codeDir(), env: { ...process.env, ...localEnv(), HF_HUB_DISABLE_XET: '1' } });
+    // download.py picks the VIDEO engine off VB_LOCAL_VIDEO_MODEL and falls back to '5b'. That var is
+    // emitted by autoconfig.toEnv(), which only ever builds the RENDER spawn env (index.ts) — it never
+    // reaches process.env. Without it here, the Download button fetched the retired FastWan-5B (~24GB)
+    // and wrote .model-path-5b, while videoReady() looked for the '14b' marker .model-path, so the VIDEO
+    // stage never went ready and every re-click re-downloaded. Pass the setting the app actually runs.
+    const env = { ...process.env, ...localEnv(), VB_LOCAL_VIDEO_MODEL: getSettings().localVideoModel, HF_HUB_DISABLE_XET: '1' };
+    child = spawn(py, [path.join(codeDir(), 'download.py'), stage], { cwd: codeDir(), env });
   } catch (e: any) {
     return { done: Promise.reject(e), cancel: () => {} };
   }
