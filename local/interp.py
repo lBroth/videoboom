@@ -1,12 +1,18 @@
-"""Frame interpolation via RIFE (rife-ncnn-vulkan, Apple GPU through MoltenVK) — 2x a video's frame rate.
+"""Frame interpolation via RIFE (rife-ncnn-vulkan, Apple GPU through MoltenVK) — Nx a video's frame rate.
 
-Used to render Wan clips at HALF the frames (faster denoise + VAE) then interpolate back up to the target
-fps with real motion. RIFE at 2x (small frame gap) is near-ground-truth on cinematic pans/walking. MIT
-licensed (wrapper + weights). Falls back to nothing here — the engine handles the ffmpeg fallback.
+Used to render Wan clips at a fraction of the timeline frames (faster denoise + VAE) then interpolate back
+up with real motion. RIFE v4.x is timestep-conditioned, so an Nx pass synthesizes N-1 evenly spaced frames
+per gap in ONE pass — near-ground-truth on cinematic pans/walking at these small gaps. MIT licensed
+(wrapper + weights). Falls back to nothing here — the engine handles the ffmpeg fallback.
 
-run_interpolate(req): {video, out, [model], [gpuid], [out_fps]} -> {ok, frames_in, frames_out}. Doubles the
-frame count (a midpoint between each pair + the last frame repeated once = 2n frames), muxed at out_fps
-(pass 2x the source fps) so the clip keeps exactly its source duration with real in-between motion.
+run_interpolate(req): {video, out, [factor], [model], [gpuid], [out_fps]} -> {ok, frames_in, frames_out}.
+Multiplies the frame count by `factor` (default 2, clamped to 2..4): N-1 midpoints between each pair, plus
+the last frame repeated factor-1 times = n*factor frames, muxed at out_fps (pass factor x the source fps)
+so the clip keeps exactly its source duration with real in-between motion.
+
+Why the caller may ask for 3x rather than 2x: the engine's timeline is 24fps and the 14B saves at 16fps.
+2x lands on 32fps, which conforms to 24 by dropping 1 frame in 4 at uneven phase (visible cadence break);
+3x lands on 48fps, an exact 2:1 decimation to 24. See rifeFactor() in src/engine/localVideo.ts.
 """
 import os
 import shutil
@@ -48,6 +54,9 @@ def run_interpolate(req: dict) -> dict:
     out = req["out"]
     model = req.get("model") or _default_model()
     gpuid = int(req.get("gpuid", 0))
+    # Clamped: 1 would be a no-op pass, and past 4 the synthesized-to-real frame ratio stops buying
+    # smoothness while the per-clip cost keeps growing.
+    factor = max(2, min(4, int(req.get("factor", 2) or 2)))
 
     work = video + "_interp"
     # A previous FAILED/killed run leaves stale frames here; ffmpeg's image2 demuxer would happily append
@@ -67,19 +76,23 @@ def run_interpolate(req: dict) -> dict:
     # No caching: the sidecar runs each job in a fresh subprocess (MoltenVK isolation), so nothing persists.
     rife = Rife(gpuid=gpuid, model=model, scale=2, width=w, height=h)
 
-    # interleave: f0, mid(f0,f1), f1, mid(f1,f2), f2, ..., fN, fN  -> 2n frames. The final frame repeats
-    # once so the clip keeps EXACTLY its source duration at 2x fps (2n-1 frames would run 1/(2*fps) short
-    # per clip — enough to break the chained-total >= scene-window invariant and drift the timeline).
+    # interleave: f0, [factor-1 midpoints], f1, [factor-1 midpoints], f2, ..., fN, then fN repeated
+    # factor-1 times -> exactly n*factor frames. The tail repeat keeps the clip at EXACTLY its source
+    # duration at factor x fps (n*factor-(factor-1) frames would run short per clip — enough to break the
+    # chained-total >= scene-window invariant and drift the timeline).
     oi = 0
     prev = first
     Image.open(os.path.join(fin, frames[0])).convert("RGB").save(os.path.join(fout, f"o_{oi:05d}.png")); oi += 1
     for i in range(1, n):
         cur = Image.open(os.path.join(fin, frames[i])).convert("RGB")
-        mid = rife.process(prev, cur, timestep=0.5)
-        mid.save(os.path.join(fout, f"o_{oi:05d}.png")); oi += 1
+        for j in range(1, factor):
+            # RIFE v4.x takes an arbitrary timestep, so 3x is one pass with two midpoints per gap — not a
+            # recursive 2x-of-2x (which would interpolate already-synthesized frames and compound error).
+            rife.process(prev, cur, timestep=j / factor).save(os.path.join(fout, f"o_{oi:05d}.png")); oi += 1
         cur.save(os.path.join(fout, f"o_{oi:05d}.png")); oi += 1
         prev = cur
-    prev.save(os.path.join(fout, f"o_{oi:05d}.png")); oi += 1
+    for _ in range(factor - 1):
+        prev.save(os.path.join(fout, f"o_{oi:05d}.png")); oi += 1
 
     fps = float(req.get("out_fps", 24))
     subprocess.run([

@@ -4,7 +4,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { env, envInt, envBool } from './config';
-import { vW, vH } from './ffmpeg';
+import { vW, vH, FPS } from './ffmpeg';
 import { ensureSidecar, sidecarPost, readMarker } from './sidecar';
 
 /** Which local i2v model (the Fast/Quality choice in Settings):
@@ -60,7 +60,11 @@ export async function genVideoLocal(img: string, prompt: string, outMp4: string,
   // ── Wan 2.2 (5B / 14B) ─────────────────────────────────────────────────────────────────────────
   const is5b = model === '5b';
   const nativeFps = localNativeFps();
-  const isHd = !is5b && env('VB_LOCAL_QUALITY', 'fast') === 'hd' && !env('VB_LOCAL_WAN_STEPS');
+  // HD is a pure QUALITY-setting question. It used to also require "no explicit step override", which made
+  // any injected VB_LOCAL_WAN_STEPS (rerender-clips, or a 5B run before setEnv gained replace semantics)
+  // silently demote an HD render to the fast VAE + the short deadline while ALSO skipping the Lightning
+  // LoRA — the worst of both paths. The step override still applies below; it just no longer redefines HD.
+  const isHd = !is5b && env('VB_LOCAL_QUALITY', 'fast') === 'hd';
   const payload: Record<string, unknown> = {
     model_dir: md,
     image: img,
@@ -121,19 +125,46 @@ export async function genVideoLocal(img: string, prompt: string, outMp4: string,
   }
 }
 
-/** RIFE 2x a sub-24fps clip (the 14B saves at Wan's native 16fps) so the 24fps timeline conform DECIMATES
- * (32→24 drops 1 frame in 4) instead of duplicating every other frame — the duplication reads as constant
- * judder. ~3s per clip on the Apple GPU (ncnn/MoltenVK). Best-effort: on any failure the raw clip stands.
+/** Smallest interpolation factor that lands a sub-timeline clip on an EXACT multiple of the timeline fps.
+ *
+ * This is the difference between smooth and merely "less bad". The 14B saves at Wan's native 16fps; a plain
+ * 2x lands on 32fps, and the timeline conform (`fps=24`) then has to drop 1 frame in 4 at uneven phase — a
+ * repeating 4-frame cadence break that reads as micro-judder. 3x lands on 48fps, which decimates to 24 as a
+ * clean 2:1 (every second frame, perfectly even). RIFE v4.x is timestep-conditioned, so a 3x pass costs one
+ * extra synthesized frame per gap, not a second full pass.
+ * Returns 1 when the clip is already at/above the timeline rate (no interpolation needed). Falls back to 2
+ * when no clean factor exists within `maxFactor` — still better than leaving it at native. */
+export function rifeFactor(nativeFps: number, timelineFps: number = FPS, maxFactor = 4): number {
+  if (!(nativeFps > 0) || nativeFps >= timelineFps) return 1;
+  for (let f = 2; f <= maxFactor; f++) if ((nativeFps * f) % timelineFps === 0) return f;
+  return 2;
+}
+
+/** Interpolate a sub-timeline clip up to an exact multiple of the 24fps timeline (see rifeFactor), so the
+ * conform decimates evenly instead of duplicating or dropping frames at an uneven phase. ~3-5s per clip on
+ * the Apple GPU (ncnn/MoltenVK). Best-effort: on any failure the raw clip stands — but the failure is now
+ * LOGGED, because a silent fallback means every clip in that render conforms 16→24 by duplicating one frame
+ * in two (constant judder) with nothing in the UI or logs to explain why the result looks worse.
  * Per-clip ONLY — interpolating an assembled timeline would synthesize morph frames across scene cuts. */
 async function rifeSmooth(clip: string, nativeFps: number, deadlineMs: number): Promise<void> {
-  if (nativeFps >= 24 || !envBool('VB_LOCAL_RIFE', true)) return;
+  if (!envBool('VB_LOCAL_RIFE', true)) return;
+  const factor = rifeFactor(nativeFps);
+  if (factor < 2) return;
   const interp = clip.replace(/\.mp4$/, '_rife.mp4');
   try {
     // timeout_sec: the sidecar kills its worker subprocess just before our HTTP deadline, so an abandoned
     // job can never sit on the GPU lock after we've given up (that would starve the next clip's /i2v).
-    const r = await sidecarPost('/interp', { video: clip, out: interp, out_fps: nativeFps * 2, timeout_sec: Math.max(60, Math.floor(deadlineMs / 1000) - 60) }, deadlineMs);
-    if (r.ok && fs.existsSync(interp) && fs.statSync(interp).size > 0) fs.renameSync(interp, clip);
-  } catch {
-    /* interpolation is optional polish — the 16fps clip still plays */
+    const r = await sidecarPost(
+      '/interp',
+      { video: clip, out: interp, factor, out_fps: nativeFps * factor, timeout_sec: Math.max(60, Math.floor(deadlineMs / 1000) - 60) },
+      deadlineMs,
+    );
+    if (r.ok && fs.existsSync(interp) && fs.statSync(interp).size > 0) {
+      fs.renameSync(interp, clip);
+      return;
+    }
+    console.error(`[rife] interpolation did not produce output (${nativeFps}→${nativeFps * factor}fps): ${r?.error || 'unknown'} — clip stays at ${nativeFps}fps and will judder on the ${FPS}fps timeline`);
+  } catch (e: any) {
+    console.error(`[rife] interpolation failed (${nativeFps}→${nativeFps * factor}fps): ${e?.message || e} — clip stays at ${nativeFps}fps and will judder on the ${FPS}fps timeline`);
   }
 }

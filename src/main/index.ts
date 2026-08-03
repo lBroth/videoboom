@@ -341,9 +341,15 @@ function registerIpc() {
     guardRender(o.pid) ?? streamOp('render:' + o.pid, 'render',
       ['--project', o.pid, ...(o.preview ? ['--preview'] : []), ...(o.regenStory ? ['--regen-story'] : [])], undefined, renderNeedsGpu()));
   ipcMain.handle('render:resume', (_e, pid: string) => guardRender(pid) ?? streamOp('render:' + pid, 'resume', ['--project', pid], undefined, renderNeedsGpu()));
-  // Re-render the existing clips at quality (20 steps), reusing storyboard + keyframes — only the video step.
+  // Re-render the existing clips at higher quality, reusing storyboard + keyframes — only the video step.
+  // The step bump is 5B-ONLY. The 5B runs native steps (10 by default), so 20 is a real quality gain. The
+  // 14B's fast path is the Wan2.2-Lightning 4-step DISTILLATION: forcing 20 steps through it over-denoises
+  // into flat, slow-motion movement (see localVideo.ts) — the opposite of a quality re-render — and its HD
+  // path already runs the full 40-step model-config schedule. So on the 14B this op keeps the resolved
+  // settings and simply re-renders.
   ipcMain.handle('render:requality', (_e, pid: string) =>
-    guardRender(pid) ?? streamOp('render:' + pid, 'rerender-clips', ['--project', pid], { VB_LOCAL_WAN_STEPS: '20' }, renderNeedsGpu()));
+    guardRender(pid) ??
+    streamOp('render:' + pid, 'rerender-clips', ['--project', pid], getSettings().localVideoModel === '5b' ? { VB_LOCAL_WAN_STEPS: '20' } : undefined, renderNeedsGpu()));
   ipcMain.handle('scene:regenerate', (_e, o: { pid: string; index: number }) =>
     guardRender(o.pid) ?? streamOp('render:' + o.pid, 'regenerate-scene', ['--project', o.pid, '--index', String(o.index)], undefined, renderNeedsGpu()));
   ipcMain.handle('op:cancel', (_e, opId: string) => { RUNS.get(opId)?.cancel(); return true; });

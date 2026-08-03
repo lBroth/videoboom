@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import ffmpegStatic from 'ffmpeg-static';
 import ffprobeStatic from 'ffprobe-static';
-import { env, envInt } from './config';
+import { env, envInt, envBool } from './config';
 import { tmp, copyIn, fileExists, fileSize } from './storage';
 
 // Resolve a bundled binary path; when packaged inside app.asar the real file lives in app.asar.unpacked.
@@ -103,12 +103,86 @@ export async function lastFrame(video: string, out: string): Promise<string | nu
   return ok && fileExists(out) ? out : null;
 }
 
-/** Concatenate clips (re-encoded, so differing params don't break it) into one video. Audio stripped. */
-export async function concatClips(clips: string[], out: string): Promise<string | null> {
-  if (!clips.length) return null;
-  const list = tmp(`concat_${Math.abs(out.split('').reduce((a, c) => (a * 31 + c.charCodeAt(0)) | 0, 7))}.txt`);
+/** Mean luma + saturation of a still (signalstats), or null if unreadable. */
+export async function frameLevels(img: string): Promise<{ y: number; sat: number } | null> {
+  const r = await run(FFMPEG, ['-v', 'error', '-i', img, '-vf', 'signalstats,metadata=print:file=-', '-f', 'null', '-']);
+  const s = r.stdout.toString();
+  const y = parseFloat((s.match(/lavfi\.signalstats\.YAVG=([\d.]+)/) || [])[1] || '');
+  const sat = parseFloat((s.match(/lavfi\.signalstats\.SATAVG=([\d.]+)/) || [])[1] || '');
+  return Number.isFinite(y) && Number.isFinite(sat) ? { y, sat } : null;
+}
+
+// How far a single level-match may push exposure / saturation. Deliberately small: the correction must be
+// able to cancel accumulated drift without ever overriding a scene's INTENTIONAL lighting change.
+const MATCH_MAX_BRIGHT = 0.08; // eq brightness units (~±20 of 255)
+const MATCH_MAX_SAT = 0.06;    // ±6% saturation
+
+/** Nudge a chained start frame's exposure/saturation back toward its anchor keyframe, by a CLAMPED amount.
+ *
+ * Chained i2v drifts: each sub-clip is generated FROM the previous clip's last frame, so per-generation
+ * exposure/saturation error compounds with nothing pulling it back — a 12s scene is 6 links at the 14B's
+ * ~2.3s native clip, and the cross-scene chain adds more on top. The clamp is what makes this safe to apply
+ * unconditionally: with no drift the correction rounds to nothing and the source frame is returned
+ * untouched, and it can never move a frame far enough to fight a deliberate lighting change.
+ * Best-effort — any probe/encode failure returns the source frame. */
+export async function matchLevels(src: string, ref: string, out: string): Promise<string> {
+  const [a, b] = await Promise.all([frameLevels(src), frameLevels(ref)]);
+  if (!a || !b || !(a.sat > 0)) return src;
+  const bright = Math.max(-MATCH_MAX_BRIGHT, Math.min(MATCH_MAX_BRIGHT, (b.y - a.y) / 255));
+  const sat = Math.max(1 - MATCH_MAX_SAT, Math.min(1 + MATCH_MAX_SAT, b.sat / a.sat));
+  if (Math.abs(bright) < 0.004 && Math.abs(sat - 1) < 0.01) return src; // below visibility — don't re-encode
+  const ok = await ffmpeg(['-i', src, '-vf', `eq=brightness=${bright.toFixed(4)}:saturation=${sat.toFixed(4)}`, out]);
+  return ok && fileSize(out) > 0 ? out : src;
+}
+
+/** Write a concat-demuxer list file for `clips` and return its path. */
+function concatList(clips: string[], tag: string): string {
+  const list = tmp(`concat_${tag}.txt`);
   fs.writeFileSync(list, clips.map((c) => `file '${c.replace(/\\/g, '/')}'`).join('\n') + '\n');
-  const ok = await ffmpeg(['-f', 'concat', '-safe', '0', '-i', list, ...x264(), '-an', out]);
+  return list;
+}
+
+/** Concatenate clips into one video, audio stripped — STREAM-COPY when the inputs are compatible, else
+ * re-encode.
+ *
+ * Saving this hop matters: a local clip already goes through sub-clip concat -> window conform -> timeline
+ * concat -> upscale -> grade, and every x264 generation erodes the 480p texture that the upscaler then
+ * amplifies. Sub-clips of one scene come from the same model at the same settings, so `-c copy` is the
+ * normal case and it is bit-exact.
+ *
+ * The copy is VERIFIED, not assumed: the concat demuxer can exit 0 while producing a broken or truncated
+ * file when the inputs' codec parameters differ subtly, so the result is only accepted when its duration
+ * matches the sum of the inputs. Anything else falls back to the re-encode that was always here. */
+export async function concatClips(clips: string[], out: string, opts: { fps?: number } = {}): Promise<string | null> {
+  if (!clips.length) return null;
+  const tag = String(Math.abs(out.split('').reduce((a, c) => (a * 31 + c.charCodeAt(0)) | 0, 7)));
+  const list = concatList(clips, tag);
+  if (envBool('VB_CONCAT_COPY', true)) {
+    const durs = await Promise.all(clips.map((c) => probeDuration(c)));
+    if (durs.every((d) => d != null && d > 0)) {
+      const want = (durs as number[]).reduce((a, b) => a + b, 0);
+      const copyOut = out.replace(/\.mp4$/, '') + '_copy.mp4';
+      if (await ffmpeg(['-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', '-an', copyOut])) {
+        const got = await probeDuration(copyOut);
+        // 1 frame of slack: container rounding, not a dropped segment.
+        if (got != null && Math.abs(got - want) < 1 / FPS && fileSize(copyOut) > 0) {
+          try {
+            fs.renameSync(copyOut, out);
+            return out;
+          } catch {
+            /* cross-device or locked — fall through to the re-encode */
+          }
+        }
+      }
+      try {
+        fs.rmSync(copyOut, { force: true });
+      } catch {
+        /* best-effort cleanup */
+      }
+    }
+  }
+  const rate = opts.fps ? ['-r', String(Math.trunc(opts.fps))] : [];
+  const ok = await ffmpeg(['-f', 'concat', '-safe', '0', '-i', list, ...x264(), ...rate, '-an', out]);
   return ok && fileExists(out) ? out : null;
 }
 
@@ -135,7 +209,26 @@ export async function fitToWindow(raw: string, startSec: number, endSec: number,
   const rawDur = (await probeDuration(raw)) || target;
   let factor = rawDur && rawDur > 0 ? target / rawDur : 1.0;
   factor = Math.min(8.0, Math.max(0.05, factor));
-  await ffmpeg(['-i', raw, '-vf', `setpts=${factor.toFixed(6)}*PTS,fps=${fps}`, '-frames:v', String(nFrames), ...x264(), '-an', out]);
+  const setpts = `setpts=${factor.toFixed(6)}*PTS`;
+
+  // `setpts,fps=` resamples time by DUPLICATING or DROPPING whole frames — no motion compensation. The
+  // cloud provider only accepts whole-second durations, so a scene window is almost never an exact match
+  // and this retime happens on essentially every cloud clip: at factor 1.13 that is one duplicated frame in
+  // eight, which reads as steady judder. When the deviation is big enough to see, synthesize the in-between
+  // frames instead (same job RIFE does for the local path, which has no cloud equivalent).
+  // Gated: minterpolate is CPU-heavy at 720p, so it is skipped for deviations too small to notice.
+  const dev = Math.abs(factor - 1);
+  if (envBool('VB_SMOOTH_RETIME', true) && dev > (parseFloat(env('VB_SMOOTH_RETIME_MIN', '0.06')) || 0.06)) {
+    const mci = `${setpts},minterpolate=fps=${fps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1`;
+    if (await ffmpeg(['-i', raw, '-vf', mci, '-frames:v', String(nFrames), ...x264(), '-an', out])) {
+      // Accept ONLY at the exact frame-grid length. The whole point of this conform is that scene lengths
+      // telescope with no drift, so a clip one frame short would desync the song — better to spend the
+      // encode twice than to let motion smoothing cost frame accuracy.
+      const got = await probeDuration(out);
+      if (got != null && fileSize(out) > 0 && Math.abs(got - target) < 0.5 / fps) return out;
+    }
+  }
+  await ffmpeg(['-i', raw, '-vf', `${setpts},fps=${fps}`, '-frames:v', String(nFrames), ...x264(), '-an', out]);
   return out;
 }
 

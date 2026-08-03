@@ -3,8 +3,21 @@
 // values are also usable in dev/tests.
 const CFG: Record<string, string> = {};
 
-/** Merge an injected env map (decrypted keys + settings) into the runtime config. Last write wins. */
+/** REPLACE the runtime config with an injected env map (decrypted keys + settings), once per engine op.
+ *
+ * Clearing first is required, not cosmetic. The resolver emits several keys only for one model/backend
+ * combination, and some ops inject a one-shot override — so a merge lets a previous op's value survive into
+ * the next one and silently change how the model runs:
+ *   - `VB_LOCAL_WAN_STEPS` is emitted only for the 5B (autoconfig) and injected only by `rerender-clips`
+ *     (main/index.ts). Leaking it into a later 14B run forces that step count over the Lightning 4-step
+ *     distillation AND makes `isHd` read false, so the HD path silently drops to a few-step, no-LoRA,
+ *     tiny-VAE render — strictly worse than both Fast and HD.
+ *   - `VB_LOCAL_WAN_DIR` / `VB_LOCAL_QUALITY` likewise persisted after the setting that produced them was
+ *     cleared.
+ * Every op passes the full resolved env (main/index.ts `streamOp` spreads `sidecarEnv()`), so a replace is
+ * always complete. Reads still fall back to `process.env`, which stays the power-user override channel. */
 export function setEnv(map: Record<string, string | undefined | null>): void {
+  for (const k of Object.keys(CFG)) delete CFG[k];
   for (const [k, v] of Object.entries(map)) {
     if (v != null && v !== '') CFG[k] = String(v);
   }

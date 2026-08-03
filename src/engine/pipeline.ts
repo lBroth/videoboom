@@ -4,7 +4,7 @@
 // Progress is reported through an `emit(event)` callback the engine turns into IPC events.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import { env, envInt } from './config';
+import { env, envInt, envBool } from './config';
 import { costTotal } from './cost';
 import * as S from './storage';
 
@@ -23,7 +23,7 @@ function fsReadHeadTail(path: string, size: number): Buffer {
     fs.closeSync(fd);
   }
 }
-import { FPS, probeDuration, toPng, putThumb, stillClip, ffmpeg, toWav, x264, conformClip } from './ffmpeg';
+import { FPS, probeDuration, toPng, putThumb, stillClip, ffmpeg, toWav, x264, conformClip, concatClips } from './ffmpeg';
 import * as P from './stages';
 import { assertCastExists } from './backends/sceneShared';
 import { ensureSidecar, sidecarPost } from './sidecar';
@@ -510,13 +510,16 @@ async function assemble(pid: string, emit: Emit): Promise<{ projectId: string; v
   // different native resolution — concatenating mixed dimensions corrupts the output, so normalize first.
   const normalized: string[] = [];
   for (let i = 0; i < clips.length; i++) normalized.push(await conformClip(clips[i], `${work}/clips/norm_${i}.mp4`));
-  const concat = `${work}/concat.txt`;
-  S.writeText(concat, normalized.map((c) => `file '${c.replace(/\\/g, '/')}'`).join('\n') + '\n');
   const silent = `${work}/output/silent.mp4`;
-  await ffmpeg(['-f', 'concat', '-safe', '0', '-i', concat, ...x264(), '-r', String(FPS), silent]);
+  // Stream-copy the timeline when the conformed clips are compatible — they all come out of the same
+  // window conform at the same size and rate, so this is the normal case and it removes one full x264
+  // generation from every clip's path (render -> sub-clip concat -> conform -> HERE -> upscale -> grade).
+  // concatClips verifies the copy against the summed input duration and re-encodes at FPS if it doesn't fit.
+  await concatClips(normalized, silent, { fps: FPS });
 
   // ── finish chain (both steps best-effort — on any failure the plain concat plays) ──────────────
   let master = silent;
+  let upscaled = false;
   // 1) Upscale: the local backend emits 832×480/896×512 — watched fullscreen that reads soft no matter how
   //    good the denoise was. One Real-ESRGAN pass (sidecar /upscale, Apple GPU — idle by assemble time)
   //    to 1080p. Runs once on the whole timeline: every clip + failed-scene fill shares one size here. The
@@ -527,7 +530,10 @@ async function assemble(pid: string, emit: Emit): Promise<{ projectId: string; v
       const up = `${work}/output/upscaled.mp4`;
       const upSec = envInt('VB_UPSCALE_DEADLINE_SEC', 5400);
       const r = await sidecarPost('/upscale', { video: silent, out: up, target_h: envInt('VB_UPSCALE_H', 1080), timeout_sec: Math.max(60, upSec - 60) }, upSec * 1000);
-      if (r.ok && S.fileSize(up) > 0) master = up;
+      if (r.ok && S.fileSize(up) > 0) {
+        master = up;
+        upscaled = true;
+      }
     } catch {
       /* upscale is polish, never fail the render for it */
     }
@@ -538,11 +544,18 @@ async function assemble(pid: string, emit: Emit): Promise<{ projectId: string; v
   const finish = env('VB_FINISH', 'subtle');
   if (finish !== 'off') {
     const graded = `${work}/output/graded.mp4`;
+    // On an UPSCALED master the two motion-hostile steps come off. hqdn3d's last two numbers are its
+    // TEMPORAL strength: it averages a pixel against the same pixel in neighbouring frames, which on a
+    // timeline whose in-between frames RIFE just synthesized smears real motion and can ghost fast pans —
+    // exactly the fluidity the interpolation pass was there to buy. And Real-ESRGAN already resolves edge
+    // detail, so a second unsharp on top rings them. Spatial denoise, grade and grain still run.
+    // VB_FINISH_TEMPORAL=1 / VB_FINISH_SHARPEN=1 restore the old chain.
+    const temporal = !upscaled || envBool('VB_FINISH_TEMPORAL', false);
     const vf = [
-      'hqdn3d=1.5:1.5:3:3',
+      temporal ? 'hqdn3d=1.5:1.5:3:3' : 'hqdn3d=1.5:1.5:0:0',
       "curves=master='0/0 0.25/0.22 0.5/0.5 0.75/0.79 1/1'",
       'eq=saturation=1.06',
-      'unsharp=5:5:0.35:5:5:0.0',
+      ...(!upscaled || envBool('VB_FINISH_SHARPEN', false) ? ['unsharp=5:5:0.35:5:5:0.0'] : []),
       ...(finish === 'filmic' ? ['vignette=PI/5'] : []),
       `noise=c0s=${finish === 'filmic' ? 7 : 4}:c0f=t+u`,
     ].join(',');
