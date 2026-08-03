@@ -719,7 +719,13 @@ def generate_video(
     # Pre-convert timesteps to Python list to avoid .item() sync each step
     timestep_list = sched.timesteps.tolist()
 
+    # Per-step wall-clock. The aggregate below hides two systematic biases that matter whenever a step
+    # time is used to plan anything: step 0 pays the cold Metal pipeline cache (and, on the relay, the
+    # first expert build), and on a dual model the high->low swap is amortised across the mean. A 4-step
+    # Lightning run has so few samples that both land squarely in the average.
+    _step_times: list[tuple[float, str]] = []
     for i, t in enumerate(tqdm(range(steps), desc="Diffusion")):
+        _t_step = time.time()
         timestep_val = timestep_list[i]
 
         # Select model, cached K/V, and precomputed RoPE
@@ -817,8 +823,21 @@ def generate_video(
         # Release temporaries before eval to free memory for graph execution
         del noise_pred
         mx.eval(latents)
+        # mx.eval is the sync point, so this brackets the whole step exactly.
+        _step_times.append((time.time() - _t_step, ("high" if timestep_val >= boundary else "low") if is_dual else "-"))
 
     print(f"{Colors.DIM}  Denoising: {time.time() - t3:.1f}s{Colors.RESET}")
+    if _step_times:
+        _detail = "  ".join(f"{n}:{d_:.1f}s" for d_, n in _step_times)
+        print(f"{Colors.DIM}  Steps: {_detail}{Colors.RESET}")
+        _warm = [d_ for d_, _ in _step_times[1:]]
+        if _warm:
+            _warm_sorted = sorted(_warm)
+            _median = _warm_sorted[len(_warm_sorted) // 2]
+            print(
+                f"{Colors.DIM}  Per-step: first {_step_times[0][0]:.1f}s (cold), "
+                f"warm median {_median:.1f}s over {len(_warm)}{Colors.RESET}"
+            )
 
     # Diagnostic: per-temporal-position latent statistics
     if debug_latents:
