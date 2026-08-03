@@ -25,6 +25,12 @@ import {
 import { TIMELINE_RES } from '../../../shared/videoRes';
 import type { VideoBackend, SceneRenderCtx, Emit, Cancelled } from '../types';
 
+/** The next scene's keyframe if it is already on disk, for use as a morph target. Undefined at the end of
+ * the storyboard, which is the one place a clip legitimately has no scene to morph into. */
+function nextKeyframeOnDisk(pid: string, k: number): string | undefined {
+  return S.mediaExists(`${pid}/keyframes/scene_${k + 1}.png`) ? keyframePath(pid, k + 1) : undefined;
+}
+
 /** Render a local scene as ONE continuous shot: chain native-length sub-clips — each i2v from the previous
  * clip's last frame (the first from the keyframe) — to fill the scene, then concatenate. This fills a long
  * scene with real motion instead of stretching one short clip (slow-motion), so we can use fewer/longer
@@ -153,7 +159,10 @@ async function renderScenesLocalChained(pid: string, p: any, toRender: number[],
     // Morph target = the NEXT scene's keyframe (every rendered scene has one now),
     // so this scene ends exactly where the next begins → seamless boundary +
     // first+last, always. The final scene has no next keyframe → first-frame only.
-    const morphTo = kfPaths[k + 1] || undefined;
+    // `kfPaths` only holds the scenes of THIS pass, so rendering a subset from the editor used to leave
+    // the last scene of the subset with no morph target — a hard visual jump into a neighbour whose
+    // keyframe was sitting on disk the whole time. Fall back to it.
+    const morphTo = kfPaths[k + 1] || nextKeyframeOnDisk(pid, k);
     const [ok] = await renderClip(pid, k, p, start, emit, 42, morphTo, anchor);
     prevLast = null;
     if (ok) {
@@ -231,11 +240,18 @@ export const localVideo: VideoBackend = {
       return [false, 'Keyframe generation failed.'];
     }
     emit({ event: 'stage', stage: 'clips', total: 1 });
-    const [ok, err] = await renderClip(pid, k, p, fk, emit);
+    // Regenerating a scene must keep the same conditioning the chained pass gives it, or the refreshed
+    // clip comes back without the morph into its neighbour and re-introduces the hard cut this scene
+    // previously did not have. `fk` is the scene's own new keyframe, so it is also its drift anchor.
+    const [ok, err] = await renderClip(pid, k, p, fk, emit, 42, nextKeyframeOnDisk(pid, k), fk);
     if (!ok) return [false, err];
-    // Re-render the previous scene's clip so its boundary re-flows from its keyframe.
+    // Re-render the previous scene's clip so its boundary re-flows INTO the new keyframe. Passing `fk` as
+    // its morph target is the entire point: without it the neighbour re-rendered from byte-identical
+    // inputs (same keyframe, same prompt, same fixed seed) and produced the same clip again — minutes of
+    // 14B time for no change at all.
     if (k > 0 && S.mediaExists(`${pid}/keyframes/scene_${k - 1}.png`)) {
-      await renderClip(pid, k - 1, p, keyframePath(pid, k - 1), emit);
+      const prevKf = keyframePath(pid, k - 1);
+      await renderClip(pid, k - 1, p, prevKf, emit, 42, fk, prevKf);
     }
     return [true, ''];
   },

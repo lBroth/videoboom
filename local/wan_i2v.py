@@ -162,16 +162,22 @@ def run_i2v(req: dict) -> dict:
 
     # Tiny-VAE decode (TAEHV on torch-MPS): official decode -> seconds, near-official quality. Covers the
     # 16ch (14B/2.1) VAE via taew2_1 and the 48ch (5B/2.2) VAE via taew2_2 — see tiny_vae.py.
+    # Both branches run on EVERY request: the sidecar is resident, so leaving a previous request's choice
+    # in place silently decided this one. A Fast clip used to pin the tiny decoder for the life of the
+    # process, so a later Quality render paid the full denoise and still got TAEHV frames.
+    import tiny_vae
     if int(req.get("tiny_vae", os.environ.get("VB_LOCAL_TINY_VAE", "0"))):
-        import tiny_vae
         tiny_vae.patch()
-        if via_relay:
-            # tiny_vae patches the STOCK module's loader; mirror it onto the relay fork so the shim
-            # applies there too. This must follow `via_relay`, not `use_relay`: FastWan (5B) also runs
-            # through the fork, and it is the path where the official decode actually dominates.
-            import relay_generate
-            from mlx_video.models.wan_2 import generate as _stock_gen
-            relay_generate.load_vae_decoder = _stock_gen.load_vae_decoder
+    else:
+        tiny_vae.unpatch()
+    if via_relay:
+        # tiny_vae patches the STOCK module's loader; mirror it onto the relay fork so the shim
+        # applies there too. This must follow `via_relay`, not `use_relay`: FastWan (5B) also runs
+        # through the fork, and it is the path where the official decode actually dominates.
+        # Mirrored unconditionally, so unpatching propagates to the fork as well.
+        import relay_generate
+        from mlx_video.models.wan_2 import generate as _stock_gen
+        relay_generate.load_vae_decoder = _stock_gen.load_vae_decoder
 
     model_dir = req["model_dir"]
     image = req["image"]

@@ -94,13 +94,18 @@ class _TaehvDecoder:
         return self(z) if self._z_dim == 48 else self.decode(z)
 
 
+_ORIG_LOAD_VAE_DECODER = None
+
+
 def patch() -> None:
     """Replace load_vae_decoder for Wan VAEs we have a TAEHV checkpoint for (idempotent)."""
+    global _ORIG_LOAD_VAE_DECODER
     from mlx_video.models.wan_2 import generate as gen
 
     if getattr(gen.load_vae_decoder, "_vb_tiny_vae", False):
         return
     orig = gen.load_vae_decoder
+    _ORIG_LOAD_VAE_DECODER = orig
 
     def load_vae_decoder(vae_path, config):
         z_dim = getattr(config, "vae_z_dim", 16)
@@ -112,3 +117,20 @@ def patch() -> None:
 
     load_vae_decoder._vb_tiny_vae = True
     gen.load_vae_decoder = load_vae_decoder
+
+
+def unpatch() -> None:
+    """Restore the official Wan decoder (idempotent).
+
+    The sidecar is resident, so a patch applied for one request outlives it. Without this, one Fast clip
+    silently downgraded every later Quality render in the same session: the user paid the full Quality
+    denoise but the frames still came out of the 22MB TAEHV approximation, which is precisely what the
+    Quality tier exists to avoid. The decoder choice has to be per-request, not per-process.
+    """
+    from mlx_video.models.wan_2 import generate as gen
+
+    if not getattr(gen.load_vae_decoder, "_vb_tiny_vae", False):
+        return
+    if _ORIG_LOAD_VAE_DECODER is not None:
+        gen.load_vae_decoder = _ORIG_LOAD_VAE_DECODER
+    _DECODERS.clear()

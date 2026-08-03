@@ -104,27 +104,42 @@ export async function genVideoLocal(img: string, prompt: string, outMp4: string,
     // model's config CFG (guide 5). Override with VB_LOCAL_WAN_STEPS.
     payload.steps = envInt('VB_LOCAL_WAN_STEPS', 10);
   } else {
-    // 14B 'fast' uses the Wan2.2-Lightning 4-step LoRA (4 steps + CFG off); 'hd' = full 40-step, no LoRA.
-    if (env('VB_LOCAL_QUALITY', 'fast') !== 'hd') {
-      const ln = lightningLoras();
-      if (ln) {
-        payload.lora_high = ln.high;
-        payload.lora_low = ln.low;
-        // Full-strength Lightning on the HIGH-noise expert flattens motion (slow-mo look). 0.6 restores
-        // motion amplitude at the same 4 steps (user-picked in the 0.75-vs-0.6 overnight A/B, 2026-07-03);
-        // low-noise stays 1.0 for detail. VB_LOCAL_LORA_HIGH=1 reverts to the flat-but-safest look.
-        payload.lora_strength_high = parseFloat(env('VB_LOCAL_LORA_HIGH', '0.6')) || 0.6;
-        payload.lora_strength_low = parseFloat(env('VB_LOCAL_LORA_LOW', '1')) || 1.0;
-        // Lightning is a 4-step distillation — WITHOUT this the sidecar falls back to its 20-step default,
-        // which is ~5x slower AND over-denoises (flat, slow-mo motion). Force 4 unless explicitly overridden.
-        payload.steps = envInt('VB_LOCAL_WAN_STEPS', 4);
-      }
+    // BOTH 14B tiers run the Wan2.2-Lightning LoRA with CFG off. They differ in step count and decoder,
+    // not in whether the model is distilled.
+    //
+    // 'hd' used to mean "drop the LoRA and run the model-config 40 steps with CFG". That is 80 transformer
+    // passes against Lightning's 4 — measured at ~38 min per 2.31s sub-clip, i.e. 8.2 HOURS for a 30s
+    // video, so nobody could actually use it. Worse, the tier's real differentiator (the official VAE) was
+    // silently lost anyway: the tiny-VAE monkeypatch was never reverted, so after one Fast clip an hd
+    // render paid the full denoise and still decoded through TAEHV (fixed in local/tiny_vae.py:unpatch).
+    //
+    // Since only a 4-step I2V distillation exists (lightx2v ships no 8-step for A14B), the honest quality
+    // ladder on this hardware is: same distillation, a couple more steps, and the official decoder.
+    //   fast = 4 steps + tiny VAE      -> 132 s per sub-clip  (~29 min for 30s of video)
+    //   hd   = 6 steps + official VAE  -> 246 s per sub-clip  (~53 min for 30s of video)
+    const ln = lightningLoras();
+    if (ln) {
+      payload.lora_high = ln.high;
+      payload.lora_low = ln.low;
+      // Full-strength Lightning on the HIGH-noise expert flattens motion (slow-mo look). 0.6 restores
+      // motion amplitude at the same 4 steps (user-picked in the 0.75-vs-0.6 overnight A/B, 2026-07-03);
+      // low-noise stays 1.0 for detail. VB_LOCAL_LORA_HIGH=1 reverts to the flat-but-safest look.
+      payload.lora_strength_high = parseFloat(env('VB_LOCAL_LORA_HIGH', '0.6')) || 0.6;
+      payload.lora_strength_low = parseFloat(env('VB_LOCAL_LORA_LOW', '1')) || 1.0;
+      // Lightning is distilled to 4. Pushing it far past that over-denoises into flat, slow-motion output
+      // (the sidecar's own 20-step default is the cautionary case), so hd stops at 6 — enough for extra
+      // detail, short of the range where motion collapses.
+      payload.steps = envInt('VB_LOCAL_WAN_STEPS', isHd ? 6 : 4);
+    } else if (env('VB_LOCAL_WAN_STEPS')) {
+      // No LoRA on disk: only an explicit override runs, because the undistilled default is the 8-hour path.
+      payload.steps = envInt('VB_LOCAL_WAN_STEPS', 40);
     }
-    if (env('VB_LOCAL_WAN_STEPS')) payload.steps = envInt('VB_LOCAL_WAN_STEPS', 40);
   }
-  // 14B 'hd' runs the model-config 40 steps (~38 min/clip measured) — the 30-min default deadline would
-  // time out EVERY clip while the sidecar keeps denoising and holds the GPU lock (cascading failures).
-  const deadline = envInt('VB_LOCAL_DEADLINE_SEC', isHd ? 5400 : 1800) * 1000;
+  // Both tiers now finish in minutes (fast ~132s, hd ~246s per sub-clip measured), so the old 90-minute hd
+  // deadline no longer buys anything — it only delayed the report of a genuinely stuck job, during which
+  // the sidecar keeps the GPU lock and every later stage queues behind it. 30 minutes is ~7x the measured
+  // hd clip: generous for a slow machine, short enough that a hang surfaces the same day.
+  const deadline = envInt('VB_LOCAL_DEADLINE_SEC', 1800) * 1000;
   try {
     const r = await sidecarPost('/i2v', payload, deadline);
     if (!(r.ok && fs.existsSync(outMp4) && fs.statSync(outMp4).size > 0)) {
