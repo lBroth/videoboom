@@ -33,7 +33,9 @@ function useMedia(key?: string | null, bust?: unknown): string | null {
 }
 
 // ── live render runs (one per project; driven by the sidecar event stream) ──
-interface RunState { active: boolean; label: string; stage?: string; total?: number; done: number; finished?: boolean; cost?: number; error?: string }
+// `warning` is for non-fatal degradations the run recovered from but the user must still know about —
+// a failed 1080p upscale silently hands back the 480p render at the end of an hour-long job.
+interface RunState { active: boolean; label: string; stage?: string; total?: number; done: number; finished?: boolean; cost?: number; error?: string; warning?: string }
 const RenderCtx = createContext<{
   runs: Record<string, RunState>;
   startRender: (pid: string, preview: boolean) => void;
@@ -60,6 +62,7 @@ function RenderProvider({ children }: { children: ReactNode }) {
         else if (e.event === 'scene' || e.event === 'keyframe') next.done = (cur.done || 0) + 1;
         else if (e.event === 'done') { next.finished = true; if (e.costCents != null) next.cost = e.costCents; }
         else if (e.event === 'error') next.error = e.message;
+        else if (e.event === 'warn') next.warning = e.message;
         return { ...r, [pid]: next };
       });
       if (e.event === 'scene' || e.event === 'keyframe' || e.event === 'done') { qc.invalidateQueries({ queryKey: ['scenes', pid] }); qc.invalidateQueries({ queryKey: ['projects'] }); }
@@ -320,6 +323,12 @@ function VideoCard({ p }: { p: Project }) {
         </div>
         {active && <ProgressBar progress={p.progress || 0.05} message={runMessage(run)} />}
         {p.error && !active && <ErrorNote>{p.error}</ErrorNote>}
+        {run?.warning && !active && (
+          <div className="text-xs text-amber-300/90 flex items-start gap-1.5">
+            <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+            <span>{run.warning}</span>
+          </div>
+        )}
         {run?.finished && !active && (
           <div className="text-xs text-slate-400 flex items-center gap-2 flex-wrap">
             <span className="flex items-center gap-1.5"><CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />Finished{p.scenesFailed ? ` · ${p.scenesFailed} scene(s) failed` : ''}</span>

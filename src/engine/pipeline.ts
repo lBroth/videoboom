@@ -593,7 +593,10 @@ async function assemble(pid: string, emit: Emit): Promise<{ projectId: string; v
   const clips: string[] = [];
   let hasReal = false;
   for (const s of S.listScenes(pid).sort((a, b) => Number(a.index || 0) - Number(b.index || 0))) {
-    if (s.status !== 'done' && s.status !== 'failed') continue;
+    // Every scene contributes its own window, whatever its status. Skipping the not-yet-rendered ones used
+    // to shorten the picture while the song was merely trimmed to match (see the `-t vdur` pass below), so
+    // a non-prefix selection — tick scenes 10-12 of 30, hit "Render selected" — played the chorus footage
+    // over the intro. A still fill keeps every clip at its real timecode, which is what holds sync.
     const k = Number(s.index || 0);
     const key = `${pid}/clips/scene_${k}.mp4`;
     const dst = `${work}/clips/scene_${k}.mp4`;
@@ -604,7 +607,10 @@ async function assemble(pid: string, emit: Emit): Promise<{ projectId: string; v
     } else {
       const kkey = `${pid}/keyframes/scene_${k}.png`;
       const kf = S.mediaExists(kkey) ? S.copyOut(kkey, `${work}/clips/kf_${k}.png`) : '';
-      clips.push(await stillClip(kf, s.startSec || 0, s.endSec || 0, dst, 'SCENE FAILED'));
+      // 'failed' is the user's problem to see; a scene simply not rendered yet is not an error, so it fills
+      // silently from its keyframe rather than stamping SCENE FAILED over a perfectly good still.
+      const label = s.status === 'failed' ? 'SCENE FAILED' : '';
+      clips.push(await stillClip(kf, s.startSec || 0, s.endSec || 0, dst, label));
     }
   }
   if (!hasReal) {
@@ -641,9 +647,14 @@ async function assemble(pid: string, emit: Emit): Promise<{ projectId: string; v
       if (r.ok && S.fileSize(up) > 0) {
         master = up;
         upscaled = true;
+      } else {
+        // Not fatal, but never silent: this is the difference between the 1080p master the user asked for
+        // and the 832x480 render, delivered at the end of an hour-plus job with nothing to explain it. The
+        // usual causes are recoverable and worth naming (the frame dump needs ~15-20 GB of temp space).
+        emit({ event: 'warn', stage: 'upscale', message: `Upscale to 1080p failed — the render was kept at its native size. ${r.error || 'the sidecar reported no output'}` });
       }
-    } catch {
-      /* upscale is polish, never fail the render for it */
+    } catch (e: any) {
+      emit({ event: 'warn', stage: 'upscale', message: `Upscale to 1080p failed — the render was kept at its native size. ${e?.message || e}` });
     }
   }
   // 2) Grade: light deband/denoise → filmic S-curve + gentle saturation → micro-contrast sharpen →
