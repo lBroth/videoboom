@@ -5,6 +5,7 @@ import { app, BrowserWindow, ipcMain, dialog, screen, shell, session } from 'ele
 import path from 'node:path';
 import fs from 'node:fs';
 import { runEngine, dataDir, EngineEvent } from '../engine';
+import { stopSidecar } from '../engine/sidecar';
 
 // App icon — bundled under icons/ (inside app.asar when packaged). Used for the window (win/linux) and
 // the macOS dock in dev (packaged macOS gets its icon from the .app bundle automatically).
@@ -396,3 +397,6 @@ app.whenReady().then(async () => {
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+// The sidecar is a plain child, so quitting would otherwise re-parent it to launchd and leave the last
+// heavy model (FLUX Kontext ~10GB, the 35B LLM ~19GB) resident in unified memory until reboot.
+app.on('before-quit', stopSidecar);

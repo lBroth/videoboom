@@ -49,6 +49,30 @@ function ping(timeoutMs = 1500): Promise<boolean> {
 let server: ChildProcess | null = null;
 let starting: Promise<void> | null = null;
 
+/** Terminate the sidecar we spawned. Idempotent and safe to call when none is running.
+ *
+ * SIGTERM first so the HTTP server can unwind; a sidecar mid-diffusion holds the GPU lock and will not
+ * answer promptly, so escalate to SIGKILL. The child also watches our pid and exits on its own if we die
+ * without getting here (hard kill, crash) — see `--parent-pid` in local/server.py. */
+export function stopSidecar(): void {
+  const child = server;
+  if (!child) return;
+  server = null;
+  try {
+    child.kill('SIGTERM');
+    const t = setTimeout(() => {
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        /* already gone */
+      }
+    }, 2000);
+    t.unref?.();
+  } catch {
+    /* already gone */
+  }
+}
+
 /** Ensure the sidecar process is up: reuse a running one, else spawn `server.py` and wait for /health.
  * Model-agnostic — the per-request payload names the model. Throws if the venv isn't installed. */
 export async function ensureSidecar(): Promise<void> {
@@ -68,7 +92,7 @@ export async function ensureSidecar(): Promise<void> {
       const v = env(k);
       if (v) passthru[k] = v;
     }
-    server = spawn(py, [path.join(dir, 'server.py'), '--port', String(sidecarPort())], {
+    server = spawn(py, [path.join(dir, 'server.py'), '--port', String(sidecarPort()), '--parent-pid', String(process.pid)], {
       cwd: dir,
       stdio: ['ignore', 'inherit', 'inherit'], // sidecar logs flow to the app's stdout/stderr
       // Hand the bundled ffmpeg/ffprobe to the python handlers (interp/upscale extract + mux frames) so
@@ -78,6 +102,15 @@ export async function ensureSidecar(): Promise<void> {
     server.on('exit', () => {
       server = null;
     });
+    // Without this the sidecar outlives the app. It is a plain child of the Electron main process, so on
+    // macOS it is re-parented to launchd at quit and keeps running — and manager.py holds the last heavy
+    // model resident (unload_all() only runs at the head of /i2v), so a session that ended on a storyboard
+    // or a portrait leaves FLUX Kontext (~10GB) or the 35B LLM (~19GB) pinned in unified memory until
+    // reboot. Only the GUI path was affected: `npm run dev` from a terminal signals the whole process
+    // group on Ctrl-C, which is why this never showed up in development.
+    process.once('exit', stopSidecar);
+    process.once('SIGINT', stopSidecar);
+    process.once('SIGTERM', stopSidecar);
     // /health answers as soon as the HTTP server binds (weights load lazily per request), so this is quick.
     const deadline = Date.now() + envInt('VB_LOCAL_START_SEC', 120) * 1000;
     while (Date.now() < deadline) {

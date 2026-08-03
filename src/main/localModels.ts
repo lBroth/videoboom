@@ -34,14 +34,30 @@ function repoReady(repo: string): boolean {
  * .model-path. Each is written only after a complete download/convert, so its presence + a sentinel file
  * in the target dir means the model is usable. */
 function videoReady(): boolean {
-  const is5b = getSettings().localVideoModel === '5b';
+  const s = getSettings();
+  const is5b = s.localVideoModel === '5b';
   const marker = is5b ? '.model-path-5b' : '.model-path';
-  const override = is5b ? process.env.VB_LOCAL_WAN_5B_DIR : process.env.VB_LOCAL_WAN_DIR;
+  // Resolve the override the way the engine does (localVideo.ts modelDir()), which honors the user's
+  // "Local Wan folder" setting. Reading only process.env made the setting invisible here: autoconfig emits
+  // it into the RENDER spawn env, never into main's own environment, so a user pointing at an existing
+  // weights folder (external SSD, another checkout) stayed blocked at "absent" with no way to unblock.
+  const override = (is5b ? process.env.VB_LOCAL_WAN_5B_DIR : process.env.VB_LOCAL_WAN_DIR) || s.localWanDir;
   // Both shipped repos carry a real t5_encoder written with the model, so its presence = a complete download.
   const sentinel = 't5_encoder.safetensors';
   try {
     const dir = (override || fs.readFileSync(path.join(markerDir(), marker), 'utf8')).trim();
-    return Boolean(dir) && fs.existsSync(path.join(dir, sentinel));
+    if (!dir || !fs.existsSync(path.join(dir, sentinel))) return false;
+  } catch {
+    return false;
+  }
+  // The 14B's default Fast path is the Lightning 4-step LoRA. Without it lightningLoras() returns null,
+  // no `steps` is sent, and the sidecar falls back to its 20-step default: ~5x the denoise time and
+  // over-denoised, flat motion. The model download alone used to report "ready", so a run that lost the
+  // LoRA (interrupted fetch, moved models dir) degraded silently instead of prompting a re-download.
+  if (is5b) return true;
+  try {
+    const ld = (process.env.VB_LOCAL_LIGHTNING_DIR || fs.readFileSync(path.join(markerDir(), '.lightning-dir'), 'utf8')).trim();
+    return Boolean(ld) && ['high_noise_model.safetensors', 'low_noise_model.safetensors'].every((f) => fs.existsSync(path.join(ld, f)));
   } catch {
     return false;
   }

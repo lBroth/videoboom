@@ -15,7 +15,9 @@ small JSON; serialised by GPU_LOCK so concurrent requests queue rather than over
 """
 import argparse
 import json
+import os
 import threading
+import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -151,10 +153,31 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def _watch_parent(ppid: int) -> None:
+    """Exit when the Electron process that spawned us is gone.
+
+    We are a plain child, so on macOS a quit re-parents us to launchd and we would otherwise keep running
+    forever — with the last heavy model still resident (manager.py evicts only at the head of /i2v), i.e.
+    10-19 GB of unified memory held with no app on screen. sidecar.ts kills us on a clean quit; this covers
+    the cases where it cannot (crash, SIGKILL). os._exit skips atexit/GC on purpose: the point is to release
+    the memory immediately, and a diffusion job holding GPU_LOCK would stall a graceful shutdown.
+    """
+    while True:
+        time.sleep(5)
+        try:
+            os.kill(ppid, 0)
+        except OSError:
+            print("[vb-local] parent gone — exiting", flush=True)
+            os._exit(0)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Videoboom local-model sidecar")
     ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--parent-pid", type=int, default=0, help="exit when this pid disappears")
     args = ap.parse_args()
+    if args.parent_pid:
+        threading.Thread(target=_watch_parent, args=(args.parent_pid,), daemon=True).start()
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     print(f"[vb-local] sidecar on http://127.0.0.1:{args.port}  routes={sorted(ROUTES)}", flush=True)
     srv.serve_forever()
