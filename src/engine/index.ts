@@ -4,7 +4,7 @@
 // TypeScript, ffmpeg is the bundled static binary, and all generation is the user's own cloud API calls.
 import { setEnv } from './config';
 import { costReset, costTotal } from './cost';
-import { dataDir, getProject } from './storage';
+import { dataDir, getProject, updateProject } from './storage';
 import * as PL from './pipeline';
 
 export { dataDir };
@@ -41,6 +41,11 @@ function parseFlags(args: string[]): Record<string, string | boolean> {
 }
 const str = (v: string | boolean | undefined, d = ''): string => (typeof v === 'string' ? v : d);
 
+// Statuses that mean "a run owns this project right now". Mirrors IN_PROGRESS in renderer/App.tsx, which
+// hides the whole action row — Delete included — while a project is in one of them. The startup sweep that
+// clears them after a crash lives in src/main/projects.ts, next to listProjects.
+export const IN_PROGRESS_STATUS = new Set(['queued', 'storyboarding', 'rendering', 'refresh']);
+
 async function dispatch(command: string, f: Record<string, string | boolean>, emit: PL.Emit, cancelled: PL.Cancelled): Promise<Record<string, unknown>> {
   switch (command) {
     case 'create-project':
@@ -51,6 +56,7 @@ async function dispatch(command: string, f: Record<string, string | boolean>, em
         cast: str(f.cast),
         quality: str(f.quality, 'fast'),
         mode: str(f.mode, 'realistic'),
+        format: str(f.format, 'music-video'),
         videoModel: str(f['video-model']),
         id: str(f.id),
       });
@@ -62,7 +68,8 @@ async function dispatch(command: string, f: Record<string, string | boolean>, em
     }
     case 'render': {
       const pid = str(f.project);
-      await PL.render(pid, emit, Boolean(f.preview), cancelled);
+      // --regen-story forces a fresh STT + storyboard; otherwise a cached storyboard for the same audio is reused.
+      await PL.render(pid, emit, Boolean(f.preview), cancelled, Boolean(f['regen-story']));
       const p = getProject(pid) || {};
       return { projectId: pid, status: p.status, videoKey: p.videoKey, costCents: costTotal() };
     }
@@ -72,11 +79,50 @@ async function dispatch(command: string, f: Record<string, string | boolean>, em
       const p = getProject(pid) || {};
       return { projectId: pid, status: p.status, videoKey: p.videoKey, costCents: costTotal() };
     }
+    case 'rerender-clips': {
+      const pid = str(f.project);
+      await PL.rerenderClips(pid, emit, cancelled);
+      const p = getProject(pid) || {};
+      return { projectId: pid, status: p.status, videoKey: p.videoKey, costCents: costTotal() };
+    }
     case 'regenerate-scene': {
       const pid = str(f.project);
       const index = parseInt(str(f.index, '0'), 10);
       await PL.regenerateScene(pid, index, emit);
       return { projectId: pid, index, costCents: costTotal() };
+    }
+    case 'build-storyboard': {
+      const pid = str(f.project);
+      await PL.buildStoryboard(pid, emit, cancelled, Boolean(f['regen-story']));
+      const p = getProject(pid) || {};
+      return { projectId: pid, status: p.status, costCents: costTotal() };
+    }
+    case 'render-selected': {
+      const pid = str(f.project);
+      const scenes = str(f.scenes).split(',').map((x) => parseInt(x, 10)).filter((x) => !Number.isNaN(x));
+      await PL.renderSelected(pid, scenes, emit, cancelled);
+      const p = getProject(pid) || {};
+      return { projectId: pid, status: p.status, videoKey: p.videoKey, costCents: costTotal() };
+    }
+    case 'regenerate-keyframe': {
+      const pid = str(f.project);
+      const index = parseInt(str(f.index, '0'), 10);
+      await PL.regenerateKeyframe(pid, index, emit);
+      return { projectId: pid, index, costCents: costTotal() };
+    }
+    case 'update-scene': {
+      const pid = str(f.project);
+      const index = parseInt(str(f.index, '0'), 10);
+      let patch: Record<string, unknown> = {};
+      try { patch = JSON.parse(str(f.patch, '{}')); } catch { throw new Error('invalid scene patch'); }
+      const r = await PL.updateScene(pid, index, patch);
+      return { projectId: pid, index, scene: r.scene };
+    }
+    case 'set-scene-keyframe': {
+      const pid = str(f.project);
+      const index = parseInt(str(f.index, '0'), 10);
+      await PL.setSceneKeyframe(pid, index, str(f.image));
+      return { projectId: pid, index };
     }
     case 'get-project':
       return { project: getProject(str(f.project)) };
@@ -86,7 +132,7 @@ async function dispatch(command: string, f: Record<string, string | boolean>, em
 }
 
 /**
- * Run one engine operation. `extraEnv` carries the BYOK keys + model overrides (keychain + settings).
+ * Run one engine operation. `extraEnv` carries the on-device model choices + render options (settings).
  * `onEvent` receives every progress event live; the returned promise resolves with the terminal `result`
  * (or rejects on error) — identical to the old sidecar contract.
  */
@@ -110,6 +156,20 @@ export function runEngine(command: string, args: string[], extraEnv: Record<stri
       return result;
     } catch (err: any) {
       const message = `${err?.name || 'Error'}: ${err?.message ?? err}`;
+      // Land the failure on the project before rethrowing. pipeline.ts writes status:'rendering' when the
+      // clip loop starts and only ever clears it on success, so anything that throws after that — a failed
+      // final mux, a full disk, a sidecar that died — used to leave 'rendering' on disk forever. The card
+      // then reads that status as "busy" and hides every button behind it, Delete included, so the project
+      // became unrecoverable from the UI.
+      const pid = str(f.project);
+      if (pid) {
+        try {
+          const p = getProject(pid);
+          if (p && IN_PROGRESS_STATUS.has(String(p.status))) updateProject(pid, { status: 'failed', error: message });
+        } catch {
+          /* the project may be gone; the original error is what matters */
+        }
+      }
       emit({ event: 'error', message, trace: String(err?.stack || '').slice(-1200) });
       throw new Error(message);
     }

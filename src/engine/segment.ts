@@ -2,7 +2,7 @@
 // contiguous scene segments aligned to sung PHRASES (+ standalone INSTRUMENTAL spans) so each clip is
 // generated at its EXACT length (no time-stretch) and the visuals sync to the singing.
 import { decodePcm } from './ffmpeg';
-import type { Word } from './providers';
+import type { Word } from './stages';
 
 export const MAX_WORD_SEC = 4.0;
 
@@ -40,10 +40,20 @@ export function windowVocalCoverage(words: Word[], wins: [number, number][]): nu
   return cov;
 }
 
-export function segmentSong(words: Word[], dur: number): Seg[] {
-  const MIN_SEC = 3.0;
-  const MAX_SEC = 12.0;
-  const TARGET = 6.0;
+export interface SegOpts {
+  minSec?: number;
+  maxSec?: number;
+  target?: number;
+}
+
+/** Segment the song into scene windows. `opts` overrides the default 3/12/6s timing — the local video
+ * backend passes ~native-clip length (e.g. ~2.3s) so each clip renders at its real duration instead of
+ * being time-stretched to a 6s window (which looked like slow-motion). Shorter shots also read as proper
+ * music-video pacing. Defaults reproduce the original behaviour, so existing callers/tests are unchanged. */
+export function segmentSong(words: Word[], dur: number, opts: SegOpts = {}): Seg[] {
+  const MAX_SEC = opts.maxSec ?? 12.0;
+  const TARGET = opts.target ?? 6.0;
+  const MIN_SEC = Math.min(opts.minSec ?? 3.0, MAX_SEC);
   const PHRASE_GAP = 0.5;
   const toks: [number, number, string][] = words
     .filter((w) => (w.word || '').trim())
@@ -62,7 +72,10 @@ export function segmentSong(words: Word[], dur: number): Seg[] {
     prevEnd = Math.max(prevEnd, Math.min(e, s + MAX_WORD_SEC));
   }
   cuts.push(dur);
-  const uniq = Array.from(new Set(cuts.map(r3).filter((c) => c >= 0 && c <= dur))).sort((a, b) => a - b);
+  // Clamp rounded cuts into [0, dur] rather than dropping out-of-range ones: r3(dur) can round the final
+  // boundary just *past* dur (e.g. 45.839979 -> 45.84), and a song whose vocals have no internal phrase
+  // gap > PHRASE_GAP has no other cuts — dropping the end then collapses everything to [0] => 0 segments.
+  const uniq = Array.from(new Set(cuts.map((c) => Math.min(dur, Math.max(0, r3(c)))))).sort((a, b) => a - b);
 
   const raw: Seg[] = [];
   for (let i = 0; i + 1 < uniq.length; i++) {

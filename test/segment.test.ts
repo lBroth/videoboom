@@ -42,6 +42,17 @@ test('sung words -> contiguous tiling, lyric captured, lengths bounded', () => {
   for (const w of ['hold', 'tight', 'never', 'go', 'again']) assert.ok(allLyrics.includes(w), `lyric "${w}" present`);
 });
 
+test('continuous vocals (no internal gap) + dur that rounds up still tiles — regression for 0-scene bug', () => {
+  // Real failure: dense vocals with max internal gap < PHRASE_GAP (0.5s) and a duration whose 3rd-decimal
+  // rounding pushed the end cut just past dur. The end boundary got dropped → only [0] survived → 0 segments
+  // → "no clips". Vocals run 11.6–37.7s with ~0.3s gaps; dur=45.839979 rounds to 45.84 > dur.
+  const words = Array.from({ length: 60 }, (_, i) => ({ start: 11.6 + i * 0.43, end: 11.6 + i * 0.43 + 0.3, word: `w${i}` }));
+  const dur = 45.839979;
+  const segs = segmentSong(words, dur);
+  assertTiles(segs, dur);
+  assert.ok(segs.length >= 4, `dense-vocal song must still produce scenes (got ${segs.length})`);
+});
+
 test('long instrumental gap is chunked, not one giant scene', () => {
   const dur = 40;
   const words = [{ start: 1.0, end: 1.4, word: 'start' }];

@@ -3,9 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- desktop app: allow file:// media + inline styles; no remote code -->
+    <!-- desktop app: allow file:// media + inline styles; fonts bundled locally; no remote anything -->
     <meta http-equiv="Content-Security-Policy"
-      content="default-src 'self'; img-src 'self' file: data:; media-src 'self' file: data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self'" />
+      content="default-src 'self'; img-src 'self' file: data:; media-src 'self' file: data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'" />
     <title>Videoboom</title>
   </head>
   <body>

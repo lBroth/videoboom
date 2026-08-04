@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for the signed macOS build.
+
+  package.json points `mac.entitlements` and `mac.entitlementsInherit` here and sets
+  `hardenedRuntime: true`, but the file had never existed and `build/` is gitignored, so every signed
+  release build failed in codesign ("cannot read entitlement data") before it ever reached notarization.
+  Unsigned and ad-hoc builds were unaffected, which is why CI stayed green — it never runs `npm run dist`.
+  Kept tracked with `git add -f`, the same way local/models/rife-v4.26 and taew2_1 are.
+
+  The three below are what the Python/MLX sidecar needs to survive the hardened runtime. Without them the
+  app itself would still launch and the sidecar would be killed on start, which is the worst version of
+  this bug: a signed, notarized build where on-device generation simply does not work.
+
+  Not included: com.apple.security.cs.allow-dyld-environment-variables. SIDECAR_BOOTSTRAP_PLAN.md claims
+  this file declares it, but nothing in the app sets a DYLD_* variable — bootstrap.ts's uv env and
+  sidecar.ts's spawn env pass only VB_*, UV_* and HF_* — so it would loosen the runtime for nothing.
+-->
+<plist version="1.0">
+<dict>
+  <!-- MLX compiles Metal kernels at runtime, and CPython's interpreter loop is JIT-adjacent. -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+
+  <!-- Native wheels (torch, mlx, numpy, pyarrow) map writable+executable pages. -->
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+
+  <!-- The sidecar venv loads .dylibs from those wheels, none of which carry our Team ID. -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>

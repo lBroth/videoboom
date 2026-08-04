@@ -1,77 +1,98 @@
-// Render orchestration: storyboard -> keyframe pass -> clip pass -> assemble. Async + local. Each scene's
-// clip renders via providers.genVideo (submit + poll) inside a bounded concurrency pool. Progress is
-// reported through an `emit(event)` callback the engine turns into IPC events. Segmentation / shot-list /
-// frame-grid logic is a verbatim port of the proven pipeline.
-import { env, envInt } from './config';
+// Render orchestration: storyboard -> P.video().renderScenes (keyframe + clip loop) -> assemble. This module
+// names NO backend — the resolved VIDEO backend (local Wan chain / cloud Kling morph) owns the whole scene
+// loop behind the VideoBackend interface; the pipeline only builds the SceneRenderCtx and runs assemble.
+// Progress is reported through an `emit(event)` callback the engine turns into IPC events.
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { env, envInt, envBool } from './config';
 import { costTotal } from './cost';
 import * as S from './storage';
-import { FPS, W, H, probeDuration, toPng, putThumb, fitToWindow, stillClip, ffmpeg, toWav } from './ffmpeg';
-import * as P from './providers';
-import { segmentSong, windowVocalCoverage, windowEnergy } from './segment';
 
-export type Emit = (e: any) => void;
-export type Cancelled = () => boolean;
+/** Read up to the first + last 256KB of a file into one buffer (cheap content fingerprint for large media). */
+function fsReadHeadTail(path: string, size: number): Buffer {
+  const cap = 256 * 1024;
+  if (size <= cap * 2) return fs.readFileSync(path);
+  const fd = fs.openSync(path, 'r');
+  try {
+    const head = Buffer.alloc(cap);
+    const tail = Buffer.alloc(cap);
+    fs.readSync(fd, head, 0, cap, 0);
+    fs.readSync(fd, tail, 0, cap, size - cap);
+    return Buffer.concat([head, tail]);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+import { FPS, probeDuration, toPng, putThumb, stillClip, ffmpeg, toWav, x264, conformClip, concatClips } from './ffmpeg';
+import * as P from './stages';
+import { assertCastExists, buildKeyframe, putSceneMerged, keyframePath } from './backends/sceneShared';
+import { ensureSidecar, sidecarPost } from './sidecar';
+import { segmentSong, windowVocalCoverage, windowEnergy } from './segment';
+import type { Emit, Cancelled, SceneRenderCtx } from './backends/types';
+
+export type { Emit, Cancelled };
 const noop: Emit = () => {};
 const never: Cancelled = () => false;
 
 const MIN_SCENES = 4;
 const MAX_SCENES = 60;
-const workers = () => Math.max(1, envInt('VB_WORKERS', 4));
-
-class Cancel extends Error {}
-function checkCancel(cancelled: Cancelled): void {
-  if (cancelled()) throw new Cancel('cancelled');
-}
-
-/** Run fn over items with a bounded concurrency (mirrors the old ThreadPoolExecutor(max_workers)). */
-async function mapPool<T, R>(items: T[], limit: number, fn: (item: T, i: number) => Promise<R>): Promise<R[]> {
-  const ret: R[] = new Array(items.length);
-  let idx = 0;
-  const n = Math.max(1, Math.min(limit, items.length || 1));
-  await Promise.all(
-    Array.from({ length: n }, async () => {
-      for (;;) {
-        const i = idx++;
-        if (i >= items.length) break;
-        ret[i] = await fn(items[i], i);
-      }
-    }),
-  );
-  return ret;
-}
-
-// ── cast / refs ───────────────────────────────────────────────────────────────
-function castRoles(p: any): Record<string, string> {
-  const roles: Record<string, string> = {};
-  (p.cast || []).forEach((c: any, i: number) => {
-    const cid = typeof c === 'object' ? c.id : c;
-    if (cid) roles[cid] = (typeof c === 'object' ? c.role : null) || (i === 0 ? 'lead' : 'supporting');
-  });
-  return roles;
-}
-
-function refsForScene(p: any, scene: any): [string, string][] {
-  const roles = castRoles(p);
-  const leadId = Object.keys(roles)[0] || null;
-  let cids: string[] = (scene.characters || []).filter(Boolean);
-  if (!cids.length && leadId) cids = [leadId];
-  const cap = envInt('VB_MAX_SUBJECTS', 4);
-  const out: [string, string][] = [];
-  for (const cid of cids.slice(0, cap)) {
-    const rk = `characters/${cid}/primary.png`;
-    if (!S.mediaExists(rk)) continue;
-    const lp = S.mediaPath(rk);
-    const ch = S.getCharacter(cid) || {};
-    let label = ch.name || 'character';
-    const role = roles[cid];
-    if (role && role !== 'lead') label = `${label} (the ${role})`;
-    out.push([lp, label]);
-  }
-  return out;
-}
 
 // ── prompts ──────────────────────────────────────────────────────────────────--
 const SYS = 'You are an award-winning music-video director. Output ONLY one valid JSON object.';
+const SYS_AD = 'You are an award-winning commercial/ad director. Output ONLY one valid JSON object.';
+
+// Hard rules injected into BOTH shot lists (ad + music-video). Small local LLMs ignore soft phrasing and
+// re-introduce close-ups inside the MOTION field and readable UI/text on screens — these are the non-negotiable
+// backstops, repeated verbatim in each prompt so the model can't route around them.
+const HARD_FRAMING =
+  '- FRAMING (HARD RULE, no exceptions): NO CLOSE-UPS anywhere — not as a shot, not as a camera end-point in "motion". Never fill the frame with a face, eyes, hands or a single object; never "push in / zoom in / crane to" a close-up. Keep EVERY shot AND every camera move at MEDIUM-to-WIDE distance, the figure roughly full-body and the surrounding scene always visible.';
+const HARD_SCREENS =
+  '- SCREENS & TEXT (HARD RULE — the image model cannot spell, any readable mark comes out garbled): nothing readable may appear anywhere. Monitors, screens, phones, signs and surfaces show ONLY abstract glowing light, soft colour fields or blurred geometric shapes — NEVER readable code, logs, error messages, badges, checkmarks, status bars, dashboards, charts, UI, numbers, labels, captions, a brand/product name, or any letters or symbols. No "Merged" badge, no "error logs", no status text. Render tech, data and energy as light and colour, never as characters.';
+
+/** Shot-list rules for an ad/spot: the product is the hero, benefit-driven, punchy, ends on a CTA. */
+function adShotListPrompt(style: string, bibleBlock: string, momentsBlock: string, n: number, castBlock = ''): string {
+  return `BRAND / STYLE: ${style}${bibleBlock}${castBlock}
+
+You are turning the SPOT BIBLE above into the actual shot list — a punchy commercial cut to the music.
+For EACH timed moment below, write ONE vivid, on-brand shot that sells.
+RULES:
+- THE PRODUCT IS THE HERO. If a SUBJECT/PRODUCT reference is given (cast index 0), it appears in EVERY
+  SINGLE shot — include index 0 in every scene's "characters" list. Hero framing, the product/mascot in
+  action, the result it delivers. Refer to it ONLY by its name/role; its reference photo defines its EXACT
+  look — never invent, alter, or restyle it. Always set "shot" to "character": a spot has no empty frames.
+- EVERY SHOT NEEDS BIG, READABLE MOTION (critical — static shots kill the spot): the mascot dashes, leaps,
+  spins, sweeps ACROSS the frame; objects visibly transform, fly, or cascade; the camera moves decisively
+  (fast dolly, whip pan, orbit, crane). This is an animated commercial — exaggerated cartoon motion is
+  GOOD. Never a posed character just standing; something must be traveling through the frame in every shot.
+- STAY IN THE PRODUCT'S REAL DOMAIN (critical): the bible says what the product IS — every shot lives in
+  THAT world. Lyric metaphors are visual ideas INSIDE that domain, never literal objects: a software tool
+  that "cleans up" code shows screens, dashboards, developers, terminals, transforming codebases — NEVER a
+  physical cleaning product, spray bottle or mop. If no reference image is given, do NOT invent physical
+  packaging (bottles, boxes, labels) — sell through the product's world, its users and its effect.
+- ARC (follow the music's energy): open with a HOOK (an attention-grabbing image), reveal the PRODUCT
+  clearly, show its BENEFIT and an aspirational LIFESTYLE/feeling, and BUILD to a final CALL-TO-ACTION shot
+  (product + brand moment, confident and clean). The LAST shot is the CTA / hero product beat.
+- Ads CAN be punchy and energetic — quick, bold, beat-synced framings, dynamic camera, striking light.
+- People (if any) are aspirational lifestyle talent using/enjoying the product, looking natural and desirable.
+- VARY framing each shot (product-in-context, lifestyle wide, detail macro, dramatic angle) — medium to wide, no close-ups.
+- For EVERY shot also write "motion": ONE sentence of pure MOTION direction for the video model — an
+  EXPLICIT camera move (dolly in/out, tracking, pan left/right, orbital arc, crane up/down, whip pan) with a
+  pace word (slow/steady/brisk/rapid), plus what physically CHANGES across the clip as 2-3 chained beats
+  (e.g. "steady dolly in on the bottle, condensation beads run down, light flares across the glass").
+  Concrete and physical. NEVER "slow motion", never "static shot", no appearance/branding description.
+- ABSOLUTELY NO WRITTEN TEXT IN ANY SHOT (the image model cannot spell — every rendered word comes out
+  garbled and ruins the spot): never describe labels, packaging text, signs with words, on-screen captions,
+  UI text, lettering or brand names as VISIBLE WRITING. The product's name must NEVER appear written
+  anywhere — the reference image is the ONLY carrier of branding. Describe every surface, screen, sign and
+  package as clean/blank/unbranded. NEVER Asian/foreign signage.
+${HARD_FRAMING}
+${HARD_SCREENS}
+MOMENTS:
+${momentsBlock}
+
+Output EXACTLY ${n} scenes in the same order, indices 0..${n - 1}, each with its "characters" list.`;
+}
 
 function shotListPrompt(style: string, _look: string, bibleBlock: string, momentsBlock: string, n: number, castBlock = ''): string {
   return `STYLE: ${style}${bibleBlock}${castBlock}
@@ -100,6 +121,10 @@ RULES:
   where the story/lyrics support it; keep it to at most 3 people in one shot. In the prompt refer to a
   present character ONLY by name + role (e.g. "Debora, the mother") — NEVER invent, age, or alter their
   face, hair, age, skin or clothing; the reference photo defines their look. If no roster, use [0].
+- SHOT TYPE: set "shot" to "environment" when NO cast member is in frame at all — a pure location, texture
+  or mood image (the norm for INSTRUMENTAL moments), and leave "characters" as []. Otherwise set "shot" to
+  "character". Be honest here: a shot you describe as empty ("no one is visible", "only the environment")
+  MUST be "environment", or the character gets composited in against your own description.
 - CINEMATIC FILM, NOT A PERFORMANCE (critical for a real, non-fake look): shoot it like cinema, not a
   stage. The subject does NOT dance, lip-sync, or perform to camera. Energy comes from the CAMERA and the
   ENVIRONMENT (camera movement, light, weather, location, atmosphere) while the person stays natural —
@@ -109,11 +134,33 @@ RULES:
   NEVER backup dancers, never moving "to the beat". They are NOT cast and must never replace or age-up the lead.
 - EXPRESSION: carry the FEELING through subtle face + body acting and the mood/light of the shot, not theatrics.
 - VARY framing, camera move and location each scene (wide, medium, tracking, static) — never repeat the same
-  setup, and NEVER default to dancing. No extreme close-ups.
+  setup, and NEVER default to dancing. NO CLOSE-UPS: no face-filling or extreme close-up shots — hold the
+  camera at MEDIUM-to-WIDE distance so a face is never large in the frame (close-up faces render poorly).
 - FLOW: keep a consistent PALETTE / film-grade / tone across the video so shots morph smoothly — but the
   SETTING follows the words: change location whenever the lyric does (the lyric ALWAYS wins over location
   stability). Never hold a location past the line that justified it.
-- Do NOT render readable words/logos/captions (garbage). NEVER Asian/foreign signage.
+- EDITING — set "transition" for each shot (you are the editor, cut to the music + story):
+  - "continue" = this shot FLOWS straight out of the previous one in the SAME place/moment — the camera
+    keeps moving, the action continues, NO cut. The previous shot's last frame becomes this shot's start, so
+    keep the same subject/location/lighting and just evolve the motion. Use it for smooth connected sequences.
+  - "cut" = a real cut to a NEW shot: the location changes, a new act/section/lyric begins, a big energy
+    jump, or you want a fresh framing/subject. The FIRST shot is ALWAYS "cut".
+  Prefer "continue" for consecutive shots in one setting (fewer, smoother cuts); "cut" whenever the words or
+  place change. Don't make every shot a cut — flow where the music/story flows.
+- For EVERY shot also write "motion": ONE sentence of pure MOTION direction for the video model — an
+  EXPLICIT camera move (dolly in/out, tracking, pan left/right, tilt, orbital arc, crane up/down, handheld
+  drift) with a pace word (slow/steady/brisk/rapid), plus what the subject DOES across the clip as 2-3
+  chained physical beats (e.g. "she walks toward camera, stops at the window, turns her head to the light").
+  Without an explicit camera instruction the video model defaults to a dead push-in. Concrete and physical.
+  NEVER "slow motion", never "static shot", no appearance/wardrobe description (the image fixes the look).
+- ABSOLUTELY NO WRITTEN TEXT OR SYMBOLS IN ANY SHOT (the image model cannot spell — rendered words/code come
+  out garbled): never describe words, labels, captions, lettering, names, CODE, digits, glyphs or symbols as
+  visible marks — not on signs or screens, not floating in the air, not as smoke, particles or texture. NO
+  "streams of text", NO "lines of code", NO error messages, NO readable UI. Render code/tech/data ABSTRACTLY
+  — glowing particles, light trails, geometric shapes, colour fields — never actual characters. Describe
+  every surface, sign, screen and terminal as clean/blank/glowing-without-text. NEVER Asian/foreign signage.
+${HARD_FRAMING}
+${HARD_SCREENS}
 MOMENTS:
 ${momentsBlock}
 
@@ -128,7 +175,8 @@ function previewTarget(n: number, preview: boolean): number {
 // ── storyboard ──────────────────────────────────────────────────────────────--
 async function storyboard(pid: string, emit: Emit, preview: boolean): Promise<void> {
   const p = S.getProject(pid) || {};
-  const style = (p.style || 'cinematic music video').trim();
+  const format = p.format === 'ad' ? 'ad' : 'music-video';
+  const style = (p.style || (format === 'ad' ? 'modern product commercial' : 'cinematic music video')).trim();
   const look = env('VB_LOOK', 'attractive, stylish, fashionable, glamorous Western/European adults, viral looks');
   const cast: any[] = [];
   (p.cast || []).forEach((c: any, i: number) => {
@@ -145,8 +193,9 @@ async function storyboard(pid: string, emit: Emit, preview: boolean): Promise<vo
         return `  ${i}: ${c.name} — role: ${c.role}` + (desc ? ` — who they are: ${desc.slice(0, 140)}` : '');
       })
       .join('\n');
-    castBlock =
-      `\n\nCAST (index 0 = lead). The 'who they are' note tells you each one's AGE / TYPE so you frame them correctly (a baby is a baby, a dog is a dog) — use it ONLY for framing. In the scene prompts refer to each ONLY by name + role (e.g. "Ian, the lead"); NEVER copy that note or invent/age/alter their face, hair, age, skin or clothing — their reference photo defines their exact look:\n${lines}`;
+    castBlock = format === 'ad'
+      ? `\n\nSUBJECT / PRODUCT (index 0 = the hero product/brand). Feature it; its reference photo defines its EXACT look — never invent, alter or restyle it. Refer to it ONLY by name/role in the prompts:\n${lines}`
+      : `\n\nCAST (index 0 = lead). The 'who they are' note tells you each one's AGE / TYPE so you frame them correctly (a baby is a baby, a dog is a dog) — use it ONLY for framing. In the scene prompts refer to each ONLY by name + role (e.g. "Ian, the lead"); NEVER copy that note or invent/age/alter their face, hair, age, skin or clothing — their reference photo defines their exact look:\n${lines}`;
   }
 
   S.updateProject(pid, { status: 'storyboarding', stage: 'storyboard', progress: 0.05, renderStartedAt: Date.now() / 1000 });
@@ -156,16 +205,25 @@ async function storyboard(pid: string, emit: Emit, preview: boolean): Promise<vo
   const song = S.tmp(`song_${pid}.wav`);
   await toWav(inPath, song);
   const dur = (await probeDuration(song)) || 0;
-  const words = await P.transcribeWords(song);
-  const whisperText = (words || [])
+  // Only a genuine STT failure stops the render. An instrumental track transcribes fine to zero words —
+  // that's legitimate (the storyboard runs in instrumental mode off the energy windows), so empty words
+  // must NOT be treated as an error for music videos or ads.
+  const stt = await P.transcribe(song);
+  if (!stt.ok) {
+    S.updateProject(pid, { status: 'failed', stage: 'failed', error: `Could not read the song's audio (transcription failed): ${stt.error}` });
+    throw new Error('transcription failed');
+  }
+  const words = stt.words;
+  const whisperText = words
     .map((w) => w.word || '')
     .join(' ')
     .trim();
-  if (whisperText.length < 40) {
-    S.updateProject(pid, { status: 'failed', stage: 'failed', error: "Could not read the song's words (no audible vocals)." });
-    throw new Error('no lyrics');
-  }
-  const segs = segmentSong(words, dur).slice(0, MAX_SCENES);
+  // Scenes follow the vocal phrasing (~6s). The Wan model renders each scene as one continuous shot of
+  // chained native sub-clips (renderClip), so longer scenes no longer mean slow-motion — and the video has
+  // fewer cuts. VB_LOCAL_SCENE_SEC can tune the target.
+  const sceneSec = parseFloat(env('VB_LOCAL_SCENE_SEC', '6')) || 6;
+  const segOpts = { target: sceneSec, maxSec: sceneSec * 2, minSec: Math.max(2, sceneSec * 0.5) };
+  const segs = segmentSong(words, dur, segOpts).slice(0, MAX_SCENES);
   const n = segs.length;
   const renderTargetN = previewTarget(n, preview);
   const wins: [number, number][] = segs.map((s) => [Number(s[0]), Number(s[1])]);
@@ -174,16 +232,23 @@ async function storyboard(pid: string, emit: Emit, preview: boolean): Promise<vo
   const energies = await windowEnergy(song, wins);
 
   emit({ event: 'stage', stage: 'story' });
-  const bible = await P.storyBible(whisperText, style, dur, castBlock);
-  if (!bible || !(bible.acts || []).length) {
+  // The local LLM is nondeterministic — a single malformed JSON reply must not kill the render (the shot
+  // list below already retries 3x for the same reason).
+  let bible: any = null;
+  for (let i = 0; i < 3 && !bible; i++) {
+    bible = await P.storyBible(whisperText, style, dur, castBlock, format);
+    if (bible && !(bible.acts || []).length) bible = null;
+  }
+  if (!bible) {
     S.updateProject(pid, { status: 'failed', stage: 'failed', error: 'Story generation failed. Retry.' });
     throw new Error('no bible');
   }
   const acts = bible.acts
     .map((a: any) => `  - [${a.section || ''}] location="${a.location || ''}" beat="${a.beat || ''}" emotion="${a.emotion || ''}"`)
     .join('\n');
-  const bibleBlock =
-    `\n\nSTORY BIBLE (the video must TELL THIS STORY):\nLOGLINE: ${bible.logline || ''}\nPROTAGONIST: ${bible.protagonist || ''}\nWORLD: ${bible.world || ''}\nARC: ${bible.arc || ''}\nACTS:\n${acts}\n`;
+  const bibleBlock = format === 'ad'
+    ? `\n\nSPOT BIBLE (the commercial must deliver THIS):\nLOGLINE: ${bible.logline || ''}\nHERO PRODUCT/BRAND: ${bible.protagonist || ''}\nWORLD: ${bible.world || ''}\nARC: ${bible.arc || ''}\nACTS:\n${acts}\n`
+    : `\n\nSTORY BIBLE (the video must TELL THIS STORY):\nLOGLINE: ${bible.logline || ''}\nPROTAGONIST: ${bible.protagonist || ''}\nWORLD: ${bible.world || ''}\nARC: ${bible.arc || ''}\nACTS:\n${acts}\n`;
   S.updateProject(pid, { stage: 'scenes', progress: 0.2 });
 
   emit({ event: 'stage', stage: 'shotlist' });
@@ -198,10 +263,13 @@ async function storyboard(pid: string, emit: Emit, preview: boolean): Promise<vo
     return `${k}: t=${Math.round(wins[k][0] * 10) / 10}s dur=${Math.round((wins[k][1] - wins[k][0]) * 10) / 10}s energy=${energies[k]} ${tag}`;
   };
   const moments = Array.from({ length: n }, (_, k) => moment(k)).join('\n');
-  const user = shotListPrompt(style, look, bibleBlock, moments, n, castBlock);
+  const user = format === 'ad'
+    ? adShotListPrompt(style, bibleBlock, moments, n, castBlock)
+    : shotListPrompt(style, look, bibleBlock, moments, n, castBlock);
+  const sys = format === 'ad' ? SYS_AD : SYS;
   let scenes: any[] = [];
   for (let i = 0; i < 3; i++) {
-    const out = await P.llmJson(SYS, user, P.SCENES_SCHEMA, undefined, Math.min(60000, 1200 + n * 260), 0.4);
+    const out = await P.llmJson(sys, user, P.SCENES_SCHEMA, undefined, Math.min(60000, 1200 + n * 260), 0.4);
     scenes = out ? out.scenes || [] : [];
     if (scenes.length >= n) break;
   }
@@ -213,17 +281,31 @@ async function storyboard(pid: string, emit: Emit, preview: boolean): Promise<vo
   scenes.forEach((s, k) => {
     const st = Math.round(wins[k][0] * 100) / 100;
     const en = Math.round(wins[k][1] * 100) / 100;
-    const idxs: number[] = s.characters || [0];
-    let ids = idxs.filter((i) => Number.isInteger(i) && i >= 0 && i < cast.length).map((i) => cast[i].id);
-    if (!ids.length && cast.length) ids = [cast[0].id];
+    // An "environment" shot has NOBODY in frame, so it must NOT get the lead re-injected below — the
+    // keyframe stage would otherwise composite the character into a scene the storyboard describes as
+    // empty (observed: a shot written as "no characters are visible yet" rendered with the lead standing
+    // in it), and it would pay for Kontext (36.7s) instead of schnell (8.0s) to do it.
+    // Backstop for local LLMs, which get the schema as advisory text and may drop `shot`: an EXPLICITLY
+    // empty characters list on an instrumental moment means the same thing. `null` (field absent) is not
+    // the same as `[]` (declared empty), so keep them distinct. Ads always have the product in frame.
+    const declared: number[] | null = Array.isArray(s.characters) ? s.characters : null;
+    const instrumental = !(snippets[k] || '').trim() || coverage[k] < 0.15;
+    const envOnly = format !== 'ad'
+      && (s.shot === 'environment' || (declared !== null && !declared.length && instrumental));
+    const idxs: number[] = declared ?? [0];
+    let ids = envOnly ? [] : idxs.filter((i) => Number.isInteger(i) && i >= 0 && i < cast.length).map((i) => cast[i].id);
+    if (!envOnly && !ids.length && cast.length) ids = [cast[0].id];
     S.putScene(pid, k, {
       title: s.title || `Scene ${k + 1}`,
       prompt: s.prompt,
+      motion: String(s.motion || '').trim().slice(0, 300),
       startSec: st,
       endSec: en,
       energy: energies[k],
       lyric: (snippets[k] || '').slice(0, 200),
       characters: ids,
+      shot: envOnly ? 'environment' : 'character',
+      transition: k === 0 ? 'cut' : s.transition === 'continue' ? 'continue' : 'cut',
       status: 'pending',
     });
   });
@@ -235,105 +317,77 @@ async function storyboard(pid: string, emit: Emit, preview: boolean): Promise<vo
     durationSec: Math.round(covered * 100) / 100,
     stage: 'rendering',
     progress: 0.3,
+    // Fingerprint the audio so a later re-render reuses this storyboard while the song is unchanged.
+    storyboardHash: audioFingerprint(p),
   });
 }
 
-// ── keyframe + clip passes ──────────────────────────────────────────────────--
-function keyframePath(pid: string, k: number): string {
-  return S.mediaPath(`${pid}/keyframes/scene_${k}.png`);
-}
-
-function putSceneMerged(pid: string, k: number, sc: any, updates: Record<string, unknown>): void {
-  const cur = { ...sc, ...updates };
-  delete cur.projectId;
-  delete cur.index;
-  S.putScene(pid, k, cur);
-}
-
-async function buildKeyframe(pid: string, k: number, p: any, toon: boolean, refresh = ''): Promise<string | null> {
-  const key = `${pid}/keyframes/scene_${k}.png`;
-  const out = keyframePath(pid, k);
-  const sc = S.getScene(pid, k) || {};
-  if (!refresh && S.mediaExists(key)) {
-    await putThumb(out, `${pid}/keyframes/scene_${k}_thumb.jpg`);
-    return out;
-  }
-  let prompt = sc.prompt || '';
-  if (refresh) prompt = `${prompt}, ${refresh}, no extreme close-up`;
-  S.mkdirp(S.mediaPath(`${pid}/keyframes`));
-  if (!(await P.cloudKeyframe(prompt, out, refsForScene(p, sc), toon))) return null;
-  await putThumb(out, `${pid}/keyframes/scene_${k}_thumb.jpg`);
-  return out;
-}
-
-async function renderClip(pid: string, k: number, p: any, kfFirst: string, kfLast: string | null, emit: Emit, seed = 42): Promise<[boolean, string]> {
-  const sc = S.getScene(pid, k) || {};
-  const wdur = Math.max(0.4, Number(sc.endSec || 0) - Number(sc.startSec || 0) || 4);
-  const motion = P.MOTION[sc.energy || 'medium'] || P.MOTION.medium;
-  const vmodel = p.videoModel || null;
-  const raw = S.tmp(`raw_${pid}_${k}.mp4`);
-  const [ok, err] = await P.genVideo(kfFirst, `${sc.prompt || ''}, ${motion}, cinematic`, raw, wdur, kfLast, vmodel, seed);
-  if (!ok) {
-    const reason = P.isContentBlock(err) ? "This scene was blocked by the model's safety filter." : `Scene render failed: ${(err || '').slice(0, 160)}`;
-    putSceneMerged(pid, k, sc, { status: 'failed', error: reason });
-    emit({ event: 'scene', index: k, status: 'failed', error: reason });
-    return [false, reason];
-  }
-  const fit = await fitToWindow(raw, sc.startSec || 0, sc.endSec || 0, S.tmp(`scene_${pid}_${k}.mp4`));
-  S.copyIn(fit, `${pid}/clips/scene_${k}.mp4`);
-  putSceneMerged(pid, k, sc, { status: 'done', error: '', clipKey: `${pid}/clips/scene_${k}.mp4` });
-  emit({ event: 'scene', index: k, status: 'done' });
-  return [true, ''];
-}
-
-async function renderScenes(pid: string, emit: Emit, cancelled: Cancelled): Promise<{ projectId: string; videoKey: string }> {
+// ── scene render (backend-agnostic) ────────────────────────────────────────────
+async function renderScenes(pid: string, emit: Emit, cancelled: Cancelled, explicit?: number[]): Promise<{ projectId: string; videoKey: string }> {
   const p = S.getProject(pid) || {};
+  assertCastExists(pid, p);
   const n = Number(p.sceneCount || 0);
-  const target = Math.min(Number(p.renderTarget || n), n);
   const toon = p.videoStyle === 'toon';
   const scenes = S.listScenes(pid);
   const done = new Set(scenes.filter((s) => s.status === 'done').map((s) => Number(s.index)));
-  const toRender = scenes
-    .filter((s) => Number(s.index) < target && s.status !== 'done')
-    .map((s) => Number(s.index))
-    .sort((a, b) => a - b);
+  // Two selection modes: an EXPLICIT set the user checked in the editor (rendered even if already done, so a
+  // re-render is possible), or the prefix [0..renderTarget) minus already-done (preview/resume/full). Keyframes
+  // for every scene already exist from the storyboard phase, so a non-contiguous subset still morphs to its
+  // real next-scene keyframe on disk.
+  const valid = new Set(scenes.map((s) => Number(s.index)));
+  const target = explicit && explicit.length ? n : Math.min(Number(p.renderTarget || n), n);
+  const toRender = (explicit && explicit.length
+    ? explicit.filter((i) => valid.has(i))
+    : scenes.filter((s) => Number(s.index) < target && s.status !== 'done').map((s) => Number(s.index))
+  ).sort((a, b) => a - b);
   if (!toRender.length) return assemble(pid, emit);
-  S.updateProject(pid, { status: 'rendering', stage: 'rendering', previewScenes: done.size + toRender.length, renderStartedAt: Date.now() / 1000 });
+  // Reset progress to the keyframe-phase baseline so a resume/re-render doesn't show the previous run's 100%.
+  S.updateProject(pid, { status: 'rendering', stage: 'rendering', progress: 0.3, previewScenes: done.size + toRender.length, renderStartedAt: Date.now() / 1000 });
 
-  // keyframe pass — each scene we render + its morph target (next scene's keyframe). Parallel; reused.
-  const needed = Array.from(new Set([...toRender, ...toRender.filter((k) => k + 1 < n).map((k) => k + 1)])).sort((a, b) => a - b);
-  emit({ event: 'stage', stage: 'keyframes', total: needed.length });
-  const kfPaths: Record<number, string | null> = {};
-  await mapPool(needed, workers(), async (k) => {
-    checkCancel(cancelled);
-    const path = await buildKeyframe(pid, k, p, toon);
-    kfPaths[k] = path;
-    emit({ event: 'keyframe', index: k, ok: Boolean(path) });
-  });
-
-  for (const k of toRender) {
-    if (!kfPaths[k]) {
-      const sc = S.getScene(pid, k) || {};
-      putSceneMerged(pid, k, sc, { status: 'failed', error: 'Keyframe generation failed.' });
-      emit({ event: 'scene', index: k, status: 'failed', error: 'keyframe failed' });
-    }
-  }
-
-  // clip pass — render each scene whose keyframe exists. last_frame = next keyframe (morph).
-  const renderable = toRender.filter((k) => kfPaths[k]);
-  emit({ event: 'stage', stage: 'clips', total: renderable.length });
-  await mapPool(renderable, workers(), async (k) => {
-    checkCancel(cancelled);
-    await renderClip(pid, k, p, kfPaths[k]!, kfPaths[k + 1] || null, emit);
-    const d = S.listScenes(pid).filter((s) => s.status === 'done').length;
-    S.updateProject(pid, { scenesDone: d, progress: Math.round((0.3 + (0.6 * Math.min(d, target)) / Math.max(1, target)) * 1000) / 1000 });
-  });
-
+  // The resolved VIDEO backend owns the entire keyframe+clip loop for these scenes (local Wan continuous
+  // chain vs cloud Kling first+last morph). The pipeline names no backend — it just hands over the ctx and
+  // runs the shared `assemble` afterward, once, for either backend.
+  const ctx: SceneRenderCtx = { pid, p, toRender, target, toon, emit, cancelled };
+  await P.video().renderScenes(ctx);
   return assemble(pid, emit);
 }
 
-export async function render(pid: string, emit: Emit, preview: boolean, cancelled: Cancelled = never): Promise<{ projectId: string; videoKey: string }> {
-  await storyboard(pid, emit, preview);
+/** A cheap, stable fingerprint of the project's audio (size + a content hash of head+tail), so a cached
+ * storyboard is reused only while the audio is unchanged — re-uploading the song invalidates it. */
+function audioFingerprint(p: any): string {
+  try {
+    const path = S.mediaPath(p.audioKey);
+    const size = S.fileSize(path);
+    const fd = fsReadHeadTail(path, size);
+    return `${size}:${crypto.createHash('sha1').update(fd).digest('hex').slice(0, 16)}`;
+  } catch {
+    return '';
+  }
+}
+
+/** Has this project already got a valid storyboard for its CURRENT audio? (scenes with prompts + matching
+ * audio fingerprint). When true, a re-render can skip STT + the LLM story/shot-list passes entirely. */
+function hasValidStoryboard(pid: string): boolean {
+  const p = S.getProject(pid) || {};
+  const n = Number(p.sceneCount || 0);
+  if (n <= 0 || !p.storyboardHash) return false;
+  const s0 = S.getScene(pid, 0);
+  if (!s0 || !(s0.prompt || '').trim()) return false;
+  return p.storyboardHash === audioFingerprint(p);
+}
+
+export async function render(pid: string, emit: Emit, preview: boolean, cancelled: Cancelled = never, regenStory = false): Promise<{ projectId: string; videoKey: string }> {
+  // Reuse the cached storyboard (STT + LLM story/shot-list + keyframes are the slow pre-video steps) when the
+  // audio is unchanged and we're not explicitly regenerating — just re-point renderTarget for preview/full.
+  if (!regenStory && hasValidStoryboard(pid)) {
+    const p = S.getProject(pid) || {};
+    const n = Number(p.sceneCount || 0);
+    const target = previewTarget(n, preview);
+    emit({ event: 'stage', stage: 'story-cached' });
+    S.updateProject(pid, { renderTarget: target, status: 'rendering', stage: 'rendering', renderStartedAt: Date.now() / 1000 });
+  } else {
+    await storyboard(pid, emit, preview);
+  }
   return renderScenes(pid, emit, cancelled);
 }
 
@@ -341,6 +395,25 @@ export async function resume(pid: string, emit: Emit, cancelled: Cancelled = nev
   const p = S.getProject(pid) || {};
   const n = Number(p.scenesPlanned || p.sceneCount || 0);
   S.updateProject(pid, { renderTarget: n });
+  return renderScenes(pid, emit, cancelled);
+}
+
+/** Re-render the already-rendered clips, reusing the storyboard + keyframes (no LLM, no keyframe regen) —
+ * e.g. to upgrade a fast 10-step preview to a 20-step quality pass. Resets the done scenes' clip status to
+ * pending (keeping their prompt/timing/keyframe), then re-runs the clip pass at the current step setting
+ * (the caller passes VB_LOCAL_WAN_STEPS, e.g. 20). buildKeyframe reuses the on-disk keyframes as-is. */
+export async function rerenderClips(pid: string, emit: Emit, cancelled: Cancelled = never): Promise<{ projectId: string; videoKey: string }> {
+  const scenes = S.listScenes(pid);
+  const doneIdx = scenes.filter((s) => s.status === 'done').map((s) => Number(s.index));
+  if (!doneIdx.length) throw new Error('No rendered scenes to re-render. Render a preview first.');
+  for (const s of scenes) {
+    if (s.status !== 'done') continue;
+    const keep: Record<string, unknown> = {};
+    for (const x of ['title', 'prompt', 'motion', 'startSec', 'endSec', 'energy', 'lyric', 'characters', 'shot', 'transition']) if (x in s) keep[x] = s[x];
+    S.putScene(pid, Number(s.index), { status: 'pending', ...keep }); // keep keyframe + meta; clip will redo
+  }
+  const target = Math.max(...doneIdx) + 1;
+  S.updateProject(pid, { renderTarget: target, status: 'rendering', stage: 'rendering', renderStartedAt: Date.now() / 1000 });
   return renderScenes(pid, emit, cancelled);
 }
 
@@ -355,33 +428,111 @@ const REFRESH_VARIATIONS = [
 
 export async function regenerateScene(pid: string, k: number, emit: Emit): Promise<{ projectId: string; videoKey: string }> {
   const p = S.getProject(pid) || {};
-  const n = Number(p.sceneCount || 0);
   const sc = S.getScene(pid, k);
   if (!sc) throw new Error(`scene ${k} not found`);
   const toon = p.videoStyle === 'toon';
   S.updateProject(pid, { status: 'rendering', stage: 'refresh', progress: 0.3, renderStartedAt: Date.now() / 1000 });
   const keep: Record<string, unknown> = {};
-  for (const x of ['title', 'prompt', 'startSec', 'endSec', 'energy', 'lyric', 'characters']) if (x in sc) keep[x] = sc[x];
+  for (const x of ['title', 'prompt', 'motion', 'startSec', 'endSec', 'energy', 'lyric', 'characters', 'shot', 'transition']) if (x in sc) keep[x] = sc[x];
   S.putScene(pid, k, { status: 'pending', ...keep });
 
   const vary = REFRESH_VARIATIONS[Math.trunc(Date.now() / 1000) % REFRESH_VARIATIONS.length];
   emit({ event: 'stage', stage: 'keyframes', total: 1 });
-  const fk = await buildKeyframe(pid, k, p, toon, vary);
-  if (!fk) {
-    S.putScene(pid, k, { status: 'failed', error: 'Keyframe generation failed.', ...keep });
-    throw new Error(`keyframe generation failed for scene ${k}`);
-  }
-  const lastK = k + 1 < n && S.mediaExists(`${pid}/keyframes/scene_${k + 1}.png`) ? keyframePath(pid, k + 1) : null;
-  emit({ event: 'stage', stage: 'clips', total: 1 });
-  const [ok, err] = await renderClip(pid, k, p, fk, lastK, emit);
+  // The resolved VIDEO backend owns the fresh keyframe + clip and any neighbour re-render (the cloud morph
+  // re-renders scene k-1 with the new keyframe as its last_frame); it sets the scene status itself on failure.
+  const ctx: SceneRenderCtx = { pid, p, toRender: [k], target: Number(p.sceneCount || 0), toon, emit, cancelled: never };
+  const [ok, err] = await P.video().refreshScene(ctx, k, vary);
   if (!ok) {
     S.updateProject(pid, { status: 'failed', stage: 'failed', error: err });
     throw new Error(err);
   }
-  if (k > 0 && S.mediaExists(`${pid}/keyframes/scene_${k - 1}.png`)) {
-    await renderClip(pid, k - 1, p, keyframePath(pid, k - 1), fk, emit);
-  }
   return assemble(pid, emit);
+}
+
+// ── scene editor: storyboard phase + per-scene edits (Fase A) ─────────────────────
+/** Fase A: produce the full storyboard the user curates — the LLM shot-list (prompts) + a keyframe IMAGE for
+ * EVERY scene, then STOP. No clips, no assemble. A keyframe is ~seconds vs a clip's minutes, so the user
+ * edits prompts / re-rolls keyframes / swaps images here, then renders only the scenes they approve. Reuses a
+ * cached storyboard + existing keyframes (buildKeyframe early-returns a cached file). */
+export async function buildStoryboard(pid: string, emit: Emit, cancelled: Cancelled = never, regenStory = false): Promise<{ projectId: string }> {
+  if (regenStory || !hasValidStoryboard(pid)) await storyboard(pid, emit, false);
+  const p = S.getProject(pid) || {};
+  assertCastExists(pid, p);
+  const toon = p.videoStyle === 'toon';
+  const scenes = S.listScenes(pid);
+  emit({ event: 'stage', stage: 'keyframes', total: scenes.length });
+  S.updateProject(pid, { status: 'storyboarding', stage: 'keyframes', progress: 0.1, renderStartedAt: Date.now() / 1000 });
+  let done = 0;
+  for (const s of scenes) {
+    if (cancelled()) break;
+    const k = Number(s.index);
+    const kf = await buildKeyframe(pid, k, p, toon);
+    emit({ event: 'keyframe', index: k, ok: Boolean(kf) });
+    S.updateProject(pid, { progress: 0.1 + 0.85 * (++done / Math.max(1, scenes.length)) });
+  }
+  S.updateProject(pid, { status: 'storyboard', stage: 'storyboard-ready', progress: 1 });
+  return { projectId: pid };
+}
+
+/** Fase B: render clips for an EXPLICIT set of user-selected scenes, reusing their existing keyframes, then
+ * assemble. Selected scenes are reset to pending so a re-render actually redoes them. */
+export async function renderSelected(pid: string, indices: number[], emit: Emit, cancelled: Cancelled = never): Promise<{ projectId: string; videoKey: string }> {
+  const picks = Array.from(new Set(indices.map((i) => Math.trunc(i)))).filter((i) => i >= 0);
+  for (const i of picks) {
+    const s = S.getScene(pid, i);
+    if (s) putSceneMerged(pid, i, s, { status: 'pending' });
+  }
+  S.updateProject(pid, { status: 'rendering', stage: 'rendering', renderStartedAt: Date.now() / 1000 });
+  return renderScenes(pid, emit, cancelled, picks);
+}
+
+/** Re-roll ONLY scene k's keyframe (no clip). Drops the cached file + bumps the keyframe seed so the reroll
+ * differs (the local keyframe seed is otherwise path-derived → identical every time), rebuilds from the
+ * scene's CURRENT prompt. The clip is now stale → scene drops back to pending. */
+export async function regenerateKeyframe(pid: string, k: number, emit: Emit): Promise<{ projectId: string; index: number }> {
+  const p = S.getProject(pid) || {};
+  const sc = S.getScene(pid, k);
+  if (!sc) throw new Error(`scene ${k} not found`);
+  const toon = p.videoStyle === 'toon';
+  try { fs.unlinkSync(keyframePath(pid, k)); } catch { /* no cached keyframe yet */ }
+  const prev = process.env.VB_LOCAL_KEYFRAME_SEED;
+  process.env.VB_LOCAL_KEYFRAME_SEED = String(Math.trunc(Date.now()) % 2_000_000);
+  emit({ event: 'stage', stage: 'keyframes', total: 1 });
+  try {
+    if (!(await buildKeyframe(pid, k, p, toon))) throw new Error('keyframe generation failed');
+  } finally {
+    if (prev === undefined) delete process.env.VB_LOCAL_KEYFRAME_SEED;
+    else process.env.VB_LOCAL_KEYFRAME_SEED = prev;
+  }
+  putSceneMerged(pid, k, sc, { status: 'pending' });
+  emit({ event: 'keyframe', index: k, ok: true });
+  return { projectId: pid, index: k };
+}
+
+/** Edit a scene's authored fields (prompt/motion/title/transition) in place. Invalidates the clip (drops to
+ * pending); the user then re-rolls the keyframe + re-renders. No render here. */
+export async function updateScene(pid: string, k: number, patch: Record<string, unknown>): Promise<{ projectId: string; index: number; scene: any }> {
+  const sc = S.getScene(pid, k);
+  if (!sc) throw new Error(`scene ${k} not found`);
+  const clean: Record<string, unknown> = {};
+  for (const key of ['title', 'prompt', 'motion', 'shot', 'transition']) if (key in patch) clean[key] = patch[key];
+  putSceneMerged(pid, k, sc, { ...clean, status: 'pending' });
+  return { projectId: pid, index: k, scene: S.getScene(pid, k) };
+}
+
+/** Replace scene k's keyframe with a user-supplied image (absolute path or media key), normalized to PNG at
+ * the scene's keyframe path so i2v + the previous scene's morph use it. Clip drops to pending. */
+export async function setSceneKeyframe(pid: string, k: number, imagePath: string): Promise<{ projectId: string; index: number }> {
+  const sc = S.getScene(pid, k);
+  if (!sc) throw new Error(`scene ${k} not found`);
+  const src = path.isAbsolute(imagePath || '') ? imagePath : S.mediaPath(imagePath || '');
+  if (!imagePath || !fs.existsSync(src)) throw new Error('image not found');
+  const kfAbs = keyframePath(pid, k);
+  S.mkdirp(path.dirname(kfAbs));
+  if (!(await ffmpeg(['-y', '-i', src, kfAbs]))) throw new Error('could not import that image');
+  await putThumb(kfAbs, `${pid}/keyframes/scene_${k}_thumb.jpg`);
+  putSceneMerged(pid, k, sc, { status: 'pending', userKeyframe: true });
+  return { projectId: pid, index: k };
 }
 
 // ── character portrait ──────────────────────────────────────────────────────--
@@ -392,7 +543,8 @@ export async function characterPortrait(cid: string, uploadKey: string, prompt: 
   if (!c) throw new Error(`character ${cid} not found`);
   let src: string | null = null;
   if (uploadKey) {
-    const raw = S.copyOut(uploadKey, S.tmp(`char_in_${cid}`));
+    // uploadKey may be an absolute path the user picked OR a media key — copyInput handles both.
+    const raw = S.copyInput(uploadKey, S.tmp(`char_in_${cid}`));
     src = (await toPng(raw, S.tmp(`char_src_${cid}.png`))) || raw;
     const [safe, codes] = await P.moderateImage(src);
     if (!safe) {
@@ -400,20 +552,22 @@ export async function characterPortrait(cid: string, uploadKey: string, prompt: 
       return { characterId: cid, rejected: true, codes };
     }
   }
-  const out = S.tmp(`char_ai_${cid}.png`);
-  const base = 'polished cinematic character portrait, studio lighting, neutral background, head and shoulders, looking at camera, photorealistic, no text or letters';
-  let ok: boolean;
+  let primary: string | null;
+  let aiGenerated: boolean;
   if (src != null) {
-    const desc = prompt ? ', ' + prompt : '';
-    ok = await P.cloudKeyframe(
-      `${base}. This is the SAME person as the reference photo — reproduce their EXACT face (face shape, eyes, nose, mouth, jawline, eyebrows, skin tone), hair, facial hair and apparent age faithfully; do NOT beautify, slim, de-age or alter the face${desc}`,
-      out,
-      [[src, 'this exact person']],
-    );
+    // Uploaded photo → use it EXACTLY as the character (just moderated above + captioned below). Do NOT
+    // run it through the image model: regenerating "the same face" alters the identity. The cast pipeline
+    // (Kontext) places this real photo into scenes, so the user gets the person they uploaded.
+    primary = src;
+    aiGenerated = false;
   } else {
-    ok = await P.cloudKeyframe(`${prompt}, ${base}`, out);
+    // Description-only character → generate a portrait from the text.
+    const base = 'polished cinematic character portrait, studio lighting, neutral background, head and shoulders, looking at camera, photorealistic, no text or letters';
+    const out = S.tmp(`char_ai_${cid}.png`);
+    const ok = await P.keyframe(`${prompt}, ${base}`, out);
+    primary = ok ? out : null;
+    aiGenerated = ok;
   }
-  const primary = ok ? out : src;
   if (primary == null) {
     S.updateCharacter(cid, { status: 'failed', error: 'Could not create the portrait. Please try a different description.' });
     throw new Error('portrait generation failed');
@@ -424,8 +578,8 @@ export async function characterPortrait(cid: string, uploadKey: string, prompt: 
   S.copyIn(primaryPng, pkey);
   const tkey = await putThumb(primaryPng, `characters/${cid}/primary_thumb.jpg`);
   const images = [pkey, ...((c.images || []) as string[]).filter((i) => i !== pkey)];
-  S.updateCharacter(cid, { images, primaryKey: pkey, thumbKey: tkey, description: caption || c.description || '', status: 'ready', aiGenerated: Boolean(ok), error: '' });
-  return { characterId: cid, primaryKey: pkey, aiGenerated: Boolean(ok) };
+  S.updateCharacter(cid, { images, primaryKey: pkey, thumbKey: tkey, description: caption || c.description || '', status: 'ready', aiGenerated, error: '' });
+  return { characterId: cid, primaryKey: pkey, aiGenerated };
 }
 
 // ── assemble ─────────────────────────────────────────────────────────────────-
@@ -439,7 +593,10 @@ async function assemble(pid: string, emit: Emit): Promise<{ projectId: string; v
   const clips: string[] = [];
   let hasReal = false;
   for (const s of S.listScenes(pid).sort((a, b) => Number(a.index || 0) - Number(b.index || 0))) {
-    if (s.status !== 'done' && s.status !== 'failed') continue;
+    // Every scene contributes its own window, whatever its status. Skipping the not-yet-rendered ones used
+    // to shorten the picture while the song was merely trimmed to match (see the `-t vdur` pass below), so
+    // a non-prefix selection — tick scenes 10-12 of 30, hit "Render selected" — played the chorus footage
+    // over the intro. A still fill keeps every clip at its real timecode, which is what holds sync.
     const k = Number(s.index || 0);
     const key = `${pid}/clips/scene_${k}.mp4`;
     const dst = `${work}/clips/scene_${k}.mp4`;
@@ -450,7 +607,10 @@ async function assemble(pid: string, emit: Emit): Promise<{ projectId: string; v
     } else {
       const kkey = `${pid}/keyframes/scene_${k}.png`;
       const kf = S.mediaExists(kkey) ? S.copyOut(kkey, `${work}/clips/kf_${k}.png`) : '';
-      clips.push(await stillClip(kf, s.startSec || 0, s.endSec || 0, dst, 'SCENE FAILED'));
+      // 'failed' is the user's problem to see; a scene simply not rendered yet is not an error, so it fills
+      // silently from its keyframe rather than stamping SCENE FAILED over a perfectly good still.
+      const label = s.status === 'failed' ? 'SCENE FAILED' : '';
+      clips.push(await stillClip(kf, s.startSec || 0, s.endSec || 0, dst, label));
     }
   }
   if (!hasReal) {
@@ -459,11 +619,70 @@ async function assemble(pid: string, emit: Emit): Promise<{ projectId: string; v
   }
   S.copyOut(p.audioKey, `${work}/output/song_in`);
   await toWav(`${work}/output/song_in`, `${work}/output/song.wav`);
-  const concat = `${work}/concat.txt`;
-  S.writeText(concat, clips.map((c) => `file '${c.replace(/\\/g, '/')}'`).join('\n') + '\n');
+  // Conform every clip to vW×vH before the concat. Local Wan clips + failed-scene fills are already this
+  // size (conformClip is a no-op, no re-encode, for those), but archived projects can hold clips saved at a
+  // different native resolution — concatenating mixed dimensions corrupts the output, so normalize first.
+  const normalized: string[] = [];
+  for (let i = 0; i < clips.length; i++) normalized.push(await conformClip(clips[i], `${work}/clips/norm_${i}.mp4`));
   const silent = `${work}/output/silent.mp4`;
-  await ffmpeg(['-f', 'concat', '-safe', '0', '-i', concat, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-r', String(FPS), silent]);
-  const vdur = await probeDuration(silent);
+  // Stream-copy the timeline when the conformed clips are compatible — they all come out of the same
+  // window conform at the same size and rate, so this is the normal case and it removes one full x264
+  // generation from every clip's path (render -> sub-clip concat -> conform -> HERE -> upscale -> grade).
+  // concatClips verifies the copy against the summed input duration and re-encodes at FPS if it doesn't fit.
+  await concatClips(normalized, silent, { fps: FPS });
+
+  // ── finish chain (both steps best-effort — on any failure the plain concat plays) ──────────────
+  let master = silent;
+  let upscaled = false;
+  // 1) Upscale: the local backend emits 832×480/896×512 — watched fullscreen that reads soft no matter how
+  //    good the denoise was. One Real-ESRGAN pass (sidecar /upscale, Apple GPU — idle by assemble time)
+  //    to 1080p. Runs once on the whole timeline: every clip + failed-scene fill shares one size here. The
+  //    resolved VIDEO backend decides whether this runs (local → true; cloud already near-HD → false).
+  if (P.video().needsUpscale()) {
+    try {
+      await ensureSidecar();
+      const up = `${work}/output/upscaled.mp4`;
+      const upSec = envInt('VB_UPSCALE_DEADLINE_SEC', 5400);
+      const r = await sidecarPost('/upscale', { video: silent, out: up, target_h: envInt('VB_UPSCALE_H', 1080), timeout_sec: Math.max(60, upSec - 60) }, upSec * 1000);
+      if (r.ok && S.fileSize(up) > 0) {
+        master = up;
+        upscaled = true;
+      } else {
+        // Not fatal, but never silent: this is the difference between the 1080p master the user asked for
+        // and the 832x480 render, delivered at the end of an hour-plus job with nothing to explain it. The
+        // usual causes are recoverable and worth naming (the frame dump needs ~15-20 GB of temp space).
+        emit({ event: 'warn', stage: 'upscale', message: `Upscale to 1080p failed — the render was kept at its native size. ${r.error || 'the sidecar reported no output'}` });
+      }
+    } catch (e: any) {
+      emit({ event: 'warn', stage: 'upscale', message: `Upscale to 1080p failed — the render was kept at its native size. ${e?.message || e}` });
+    }
+  }
+  // 2) Grade: light deband/denoise → filmic S-curve + gentle saturation → micro-contrast sharpen →
+  //    temporal luma grain LAST (grain perceptually masks upscaler shimmer + AI over-smoothness).
+  //    VB_FINISH: off | subtle (default) | filmic (adds vignette + heavier grain).
+  const finish = env('VB_FINISH', 'subtle');
+  if (finish !== 'off') {
+    const graded = `${work}/output/graded.mp4`;
+    // On an UPSCALED master the two motion-hostile steps come off. hqdn3d's last two numbers are its
+    // TEMPORAL strength: it averages a pixel against the same pixel in neighbouring frames, which on a
+    // timeline whose in-between frames RIFE just synthesized smears real motion and can ghost fast pans —
+    // exactly the fluidity the interpolation pass was there to buy. And Real-ESRGAN already resolves edge
+    // detail, so a second unsharp on top rings them. Spatial denoise, grade and grain still run.
+    // VB_FINISH_TEMPORAL=1 / VB_FINISH_SHARPEN=1 restore the old chain.
+    const temporal = !upscaled || envBool('VB_FINISH_TEMPORAL', false);
+    const vf = [
+      temporal ? 'hqdn3d=1.5:1.5:3:3' : 'hqdn3d=1.5:1.5:0:0',
+      "curves=master='0/0 0.25/0.22 0.5/0.5 0.75/0.79 1/1'",
+      'eq=saturation=1.06',
+      ...(!upscaled || envBool('VB_FINISH_SHARPEN', false) ? ['unsharp=5:5:0.35:5:5:0.0'] : []),
+      ...(finish === 'filmic' ? ['vignette=PI/5'] : []),
+      `noise=c0s=${finish === 'filmic' ? 7 : 4}:c0f=t+u`,
+    ].join(',');
+    const okG = await ffmpeg(['-i', master, '-vf', vf, ...x264(envInt('VB_CRF_FINAL', 16)), '-an', graded]);
+    if (okG && S.fileSize(graded) > 0) master = graded;
+  }
+
+  const vdur = await probeDuration(master);
   if (vdur && vdur > 0) {
     const trimmed = `${work}/output/song_trim.wav`;
     await ffmpeg(['-i', `${work}/output/song.wav`, '-t', String(vdur), trimmed]);
@@ -477,7 +696,7 @@ async function assemble(pid: string, emit: Emit): Promise<{ projectId: string; v
   }
   const final = `${work}/output/music_video.mp4`;
   await ffmpeg([
-    '-i', silent, '-i', `${work}/output/song.wav`,
+    '-i', master, '-i', `${work}/output/song.wav`,
     '-map', '0:v', '-map', '1:a', '-c:v', 'copy', '-c:a', 'aac', '-shortest',
     '-metadata', 'comment=AI-generated music video — made with Videoboom',
     '-metadata', 'generator=Videoboom (open-source, AI-generated)',
@@ -494,7 +713,8 @@ async function assemble(pid: string, emit: Emit): Promise<{ projectId: string; v
   const doneN = scenes.filter((s) => s.status === 'done').length;
   const pending = scenes.filter((s) => s.status === 'pending').length;
   const doneStatus = pending ? 'preview' : 'done';
-  const patch: Record<string, unknown> = { status: doneStatus, stage: doneStatus, progress: 1, videoKey: key, scenesFailed: failed, previewScenes: doneN };
+  // error: '' — a stale failure message from an earlier attempt must not survive a successful render.
+  const patch: Record<string, unknown> = { status: doneStatus, stage: doneStatus, progress: 1, videoKey: key, scenesFailed: failed, previewScenes: doneN, error: '' };
   if (vdur && vdur > 0) patch.durationSec = Math.round(vdur * 100) / 100;
   const started = Number(p.renderStartedAt || 0);
   if (started) patch.renderSeconds = Math.round(Math.max(0, Date.now() / 1000 - started) * 10) / 10;
@@ -525,16 +745,18 @@ function parseCast(spec: string): { id: string; role: string | null }[] {
   return cast;
 }
 
-export function createProject(o: { audio: string; name?: string; style?: string; cast?: string; quality?: string; mode?: string; videoModel?: string; id?: string }): { projectId: string } {
+export function createProject(o: { audio: string; name?: string; style?: string; cast?: string; quality?: string; mode?: string; format?: string; videoModel?: string; id?: string }): { projectId: string } {
   const pid = o.id || newId();
   const ext = (o.audio.match(/\.[^.\/\\]+$/)?.[0] || '.mp3').toLowerCase();
   const audioKey = `${pid}/audio${ext}`;
   S.copyFileIn(o.audio, S.mediaPath(audioKey));
+  const format = o.format === 'ad' ? 'ad' : 'music-video';
   const item: any = {
     id: pid,
     name: o.name || 'Untitled',
     status: 'ready',
-    style: o.style || 'cinematic music video',
+    format,
+    style: o.style || (format === 'ad' ? 'modern product commercial' : 'cinematic music video'),
     cast: parseCast(o.cast || ''),
     quality: o.quality || 'fast',
     videoStyle: o.mode || 'realistic',

@@ -11,24 +11,44 @@ export interface VBApi {
   mediaUrl(key?: string | null): Promise<string | null>;
   dataDir(): Promise<string>;
   deleteProject(pid: string): Promise<boolean>;
+  downloadVideo(pid: string): Promise<string | null>;
   deleteCharacter(cid: string): Promise<boolean>;
   openExternal(url: string): Promise<void>;
   // config
-  keysStatus(): Promise<Record<string, boolean>>;
-  setKey(name: string, value: string): Promise<Record<string, boolean>>;
   getSettings(): Promise<any>;
   setSettings(patch: any): Promise<any>;
+  resolvedBackends(): Promise<Record<string, { backend: 'cloud' | 'local'; reason: string; localAvailable: boolean }>>;
+  keysStatus(): Promise<Record<string, boolean>>;
+  setKey(name: string, value: string): Promise<Record<string, boolean>>;
   // native pickers
   pickAudio(): Promise<string | null>;
   pickImage(): Promise<string | null>;
   // ops (resolve with the sidecar's terminal result)
-  createProject(o: { audio: string; name: string; style: string; cast: string; quality: string; mode: string }): Promise<any>;
+  createProject(o: { audio: string; name: string; style: string; cast: string; quality: string; mode: string; format?: string }): Promise<any>;
   createCharacter(o: { name: string; style?: string }): Promise<any>;
   characterPortrait(o: { character: string; photo?: string; prompt?: string }): Promise<any>;
-  render(pid: string, preview: boolean): Promise<any>;
+  render(pid: string, preview: boolean, regenStory?: boolean): Promise<any>;
   resume(pid: string): Promise<any>;
+  requality(pid: string): Promise<any>;
   regenerateScene(pid: string, index: number): Promise<any>;
+  // scene editor (Fase A)
+  buildStoryboard(pid: string, regenStory?: boolean): Promise<any>;
+  renderSelected(pid: string, scenes: number[]): Promise<any>;
+  regenerateKeyframe(pid: string, index: number): Promise<any>;
+  updateScene(pid: string, index: number, patch: Record<string, unknown>): Promise<any>;
+  setSceneKeyframe(pid: string, index: number, image: string): Promise<any>;
   cancel(opId: string): Promise<boolean>;
+  // on-device models: capability gate + availability + download (with progress on `download:<STAGE>`)
+  localCapabilities(): Promise<any>;
+  engineState(): Promise<'unsupported' | 'not-bootstrapped' | 'partial' | 'ready'>;
+  bootstrapStatus(): Promise<{ pythonReady: boolean; venvReady: boolean; depsReady: boolean; caps: any }>;
+  startBootstrap(): Promise<void>;
+  cancelBootstrap(): Promise<boolean>;
+  onBootstrap(cb: (e: any) => void): () => void;
+  modelsStatus(): Promise<Record<string, 'ready' | 'absent'>>;
+  downloadModel(stage: string): Promise<void>;
+  cancelDownload(stage: string): Promise<boolean>;
+  onDownload(stage: string, cb: (e: any) => void): () => void;
   // live progress for a streaming op; returns an unsubscribe fn
   on(opId: string, cb: (e: any) => void): () => void;
 }
@@ -41,13 +61,15 @@ const api: VBApi = {
   mediaUrl: (key) => ipcRenderer.invoke('media:url', key),
   dataDir: () => ipcRenderer.invoke('app:dataDir'),
   deleteProject: (pid) => ipcRenderer.invoke('project:delete', pid),
+  downloadVideo: (pid) => ipcRenderer.invoke('video:download', pid),
   deleteCharacter: (cid) => ipcRenderer.invoke('character:delete', cid),
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
 
-  keysStatus: () => ipcRenderer.invoke('keys:status'),
-  setKey: (name, value) => ipcRenderer.invoke('keys:set', name, value),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   setSettings: (patch) => ipcRenderer.invoke('settings:set', patch),
+  resolvedBackends: () => ipcRenderer.invoke('settings:resolved'),
+  keysStatus: () => ipcRenderer.invoke('keys:status'),
+  setKey: (name, value) => ipcRenderer.invoke('keys:set', name, value),
 
   pickAudio: () => ipcRenderer.invoke('dialog:openAudio'),
   pickImage: () => ipcRenderer.invoke('dialog:openImage'),
@@ -55,10 +77,37 @@ const api: VBApi = {
   createProject: (o) => ipcRenderer.invoke('project:create', o),
   createCharacter: (o) => ipcRenderer.invoke('character:create', o),
   characterPortrait: (o) => ipcRenderer.invoke('character:portrait', o),
-  render: (pid, preview) => ipcRenderer.invoke('render:start', { pid, preview }),
+  render: (pid, preview, regenStory) => ipcRenderer.invoke('render:start', { pid, preview, regenStory }),
   resume: (pid) => ipcRenderer.invoke('render:resume', pid),
+  requality: (pid) => ipcRenderer.invoke('render:requality', pid),
   regenerateScene: (pid, index) => ipcRenderer.invoke('scene:regenerate', { pid, index }),
+  buildStoryboard: (pid, regenStory) => ipcRenderer.invoke('storyboard:build', { pid, regenStory }),
+  renderSelected: (pid, scenes) => ipcRenderer.invoke('render:selected', { pid, scenes }),
+  regenerateKeyframe: (pid, index) => ipcRenderer.invoke('scene:regenerateKeyframe', { pid, index }),
+  updateScene: (pid, index, patch) => ipcRenderer.invoke('scene:update', { pid, index, patch }),
+  setSceneKeyframe: (pid, index, image) => ipcRenderer.invoke('scene:setKeyframe', { pid, index, image }),
   cancel: (opId) => ipcRenderer.invoke('op:cancel', opId),
+
+  localCapabilities: () => ipcRenderer.invoke('local:capabilities'),
+  engineState: () => ipcRenderer.invoke('engine:state'),
+  modelsStatus: () => ipcRenderer.invoke('models:status'),
+  downloadModel: (stage) => ipcRenderer.invoke('models:download', stage),
+  cancelDownload: (stage) => ipcRenderer.invoke('models:downloadCancel', stage),
+  onDownload: (stage, cb) => {
+    const ch = `download:${stage}`;
+    const handler = (_e: IpcRendererEvent, payload: any) => cb(payload);
+    ipcRenderer.on(ch, handler);
+    return () => ipcRenderer.removeListener(ch, handler);
+  },
+
+  bootstrapStatus: () => ipcRenderer.invoke('bootstrap:status'),
+  startBootstrap: () => ipcRenderer.invoke('bootstrap:start'),
+  cancelBootstrap: () => ipcRenderer.invoke('bootstrap:cancel'),
+  onBootstrap: (cb) => {
+    const handler = (_e: IpcRendererEvent, payload: any) => cb(payload);
+    ipcRenderer.on('bootstrap', handler);
+    return () => ipcRenderer.removeListener('bootstrap', handler);
+  },
 
   on: (opId, cb) => {
     const ch = `sidecar:${opId}`;

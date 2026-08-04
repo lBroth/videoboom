@@ -131,6 +131,13 @@ export function copyOut(key: string, dest: string): string {
   fs.copyFileSync(mediaPath(key), dest);
   return dest;
 }
+/** Copy from EITHER an absolute filesystem path (a file the user picked) OR a media key, to dest. */
+export function copyInput(keyOrAbs: string, dest: string): string {
+  const src = path.isAbsolute(keyOrAbs) ? keyOrAbs : mediaPath(keyOrAbs);
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.copyFileSync(src, dest);
+  return dest;
+}
 
 /** Store a working file under a storage key. */
 export function copyIn(src: string, key: string): string {

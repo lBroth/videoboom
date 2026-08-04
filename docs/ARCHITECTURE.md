@@ -1,8 +1,9 @@
 # Architecture
 
-Videoboom is an **open-source, bring-your-own-key desktop app**. An Electron shell runs an in-process
-TypeScript render engine. Everything runs on the user's machine; the only network calls are to the model
-providers the user configured with their own keys. See also `AGENTS.md`.
+Videoboom is an **open-source, local-only desktop app**. An Electron shell runs an in-process TypeScript
+render engine; every generation stage runs **on-device** (Apple Silicon / MLX) through a resident Python
+sidecar. Nothing leaves the machine — the only network use is downloading the model weights once. See also
+`AGENTS.md`.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -12,36 +13,42 @@ providers the user configured with their own keys. See also `AGENTS.md`.
                 │  window.vb  (contextBridge; the only surface the UI can touch)
 ┌───────────────┴────────────────────────────────────────────────────────────────┐
 │  Electron main  (src/main)                                                      │
-│   · window + IPC                                                                 │
-│   · API keys stored ENCRYPTED via OS keychain (safeStorage); decrypted in-mem    │
+│   · window + IPC   · no secrets — everything runs locally                        │
+│   · on-device model settings + downloads (settings.ts / localModels.ts)          │
 │   · runs the engine per operation; forwards its events to the UI (sidecar:<op>)   │
 └───────────────┬─────────────────────────────────────────────────────────────────┘
                 │  runEngine(command, args, env, onEvent)  — in-process, async
 ┌───────────────┴─────────────────────────────────────────────────────────────────┐
 │  Render engine — TypeScript  (src/engine/)                                       │
-│   index(dispatch) · pipeline · providers · segment · ffmpeg · storage · cost      │
+│   index(dispatch) · pipeline · stages · segment · ffmpeg · storage                │
 │   create-project · render(preview) · resume · regenerate-scene · character-* ·     │
 │   get-project.   state + media = plain files under the userData data/ dir          │
-│        │ OpenRouter (story LLM · keyframes · video clips · moderation)            │
-│        │ Replicate  (forced-aligned transcription for vocal-locked editing)       │
-│        ▼ ffmpeg/ffprobe (bundled static binaries) → final MP4                     │
+│        │  stages.ts → local*.ts → sidecar (localhost HTTP)                         │
+└───────────────┬─────────────────────────────────────────────────────────────────┘
+                │  POST /stt · /llm · /keyframe · /vlm · /i2v · /interp · /upscale
+┌───────────────┴─────────────────────────────────────────────────────────────────┐
+│  On-device model sidecar — Python/MLX  (local/server.py)                          │
+│   mlx-whisper · mlx-lm (Qwen) · mflux (FLUX/Kontext) · mlx-video (Wan 2.2) ·        │
+│   mlx-vlm (gemma) · RIFE · Real-ESRGAN.   ffmpeg/ffprobe (bundled) → final MP4     │
 └──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-The engine runs **in the main process** and is **async throughout** — ffmpeg runs as child processes,
-model calls are `fetch` — so the UI never blocks. There is no Python and no separate process; events flow
-back through the same `onEvent` callback the IPC layer forwards to the renderer.
+The TypeScript engine runs **in the main process** and is **async throughout** — ffmpeg runs as child
+processes, model calls are async HTTP to the localhost sidecar — so the UI never blocks. Events flow back
+through the same `onEvent` callback the IPC layer forwards to the renderer. The sidecar is started on
+demand (`src/engine/sidecar.ts`) and stays warm so the heavy MLX import is paid once.
 
 ## The render pipeline (`src/engine/pipeline.ts`, dispatched by command)
 
-1. **storyboard** — transcribe the song (forced-aligned via Replicate) → story bible (LLM) → shot list
-   (LLM, structured output). Plans the **whole song** (one record per scene, capped at `MAX_SCENES`),
-   each with the `cast` in that scene. A **preview** render does only the opening ~25%; **resume**
-   renders the rest, reusing the preview.
-2. **scene** (bounded-concurrency pool) — per scene: generate a **keyframe** placing the scene's cast
-   (reference photos + identity-preserving prompt) → generate the **video clip** (Kling, first+last-frame
-   morph) → fit to the frame grid + thumbnail. A permanently-failed scene is **tolerated** (left
-   `failed`; the rest still assemble).
+1. **storyboard** — transcribe the song on-device (mlx-whisper, per-word timing) → story bible (LLM) →
+   shot list (LLM, structured output). Empty words is a legitimate instrumental (proceeds in mood mode),
+   not an error. Plans the **whole song** (one record per scene, capped at `MAX_SCENES`), each with the
+   `cast` in that scene. A **preview** render does only the opening ~25%; **resume** renders the rest.
+2. **scene** — per scene: generate a **keyframe** placing the scene's cast (reference photos +
+   identity-preserving prompt) → generate the **video clip** (Wan 2.2, one continuous shot of chained
+   native sub-clips from a single start frame) → **trim** to the frame grid + thumbnail. Video is
+   GPU-serialized (one clip at a time). A permanently-failed scene is **tolerated** (left `failed`; the
+   rest still assemble).
 3. **assemble** — concatenate the available clips + the song → MP4 + a first-frame **poster** → `done`.
    Output is tagged as AI-generated in the file metadata.
 4. **regenerate-scene** — surgical per-scene fix: re-render one scene (keeping the neighbor seam) and
@@ -50,9 +57,10 @@ back through the same `onEvent` callback the IPC layer forwards to the renderer.
    portrait — the cast's reusable identity.
 
 ## Vocal-aligned editing
-WhisperX-style forced alignment (Replicate) gives per-word timestamps; `src/engine/segment.ts` retimes
-scenes onto a frame grid (`fitToWindow`) so cuts lock to the singing with no cumulative drift. A vocal
-scene's start snaps to its first sung word.
+On-device whisper gives per-word timestamps; `src/engine/segment.ts` snaps scene boundaries onto a frame
+grid so cuts lock to the singing with no cumulative drift. Each chained clip is `trimToWindow`'d (frame-count
+trim, real speed — never a setpts retime) to its exact slot; `assemble` then conforms every clip to a single
+resolution (`conformClip`) before the concat. A vocal scene's start snaps to its first sung word.
 
 ## Identity consistency
 Keyframes are generated from the cast's reference portraits with a strong "reproduce every facial feature
@@ -60,15 +68,15 @@ exactly, no blending/de-aging" prompt; `VB_MAX_SUBJECTS` must cover the whole ca
 dropped reference = the model invents that subject). The clip animates the keyframe, so keyframe identity
 = clip identity.
 
-## Keys, storage & privacy
-Keys are the user's, stored encrypted with the OS keychain (`safeStorage`) and passed to the engine in
-memory per operation (`src/engine/config.ts`) — never logged, never written to the project store or git.
-Projects (state JSON + media) are plain files under the userData `data/` dir (`src/engine/storage.ts`,
-local filesystem only).
+## Storage & privacy
+There are no keys or secrets — every stage runs on-device. Projects (state JSON + media) are plain files
+under the userData `data/` dir (`src/engine/storage.ts`, local filesystem only). The only network use is
+downloading model weights (`local/setup.sh` / `local/download.py`); generation is fully offline. Boot
+removes any stale `keys.json` left by the old cloud build.
 
 ## Packaging
-`electron-builder` produces the native installers; `ffmpeg-static` / `ffprobe-static` are bundled and
-`asarUnpack`ed (the engine rewrites `app.asar` → `app.asar.unpacked` in the binary path). No Python, no
-PyInstaller. The only per-OS piece is the ffmpeg binary (downloaded by `npm install`), so each OS is
-built on its own machine (or CI runner): Windows → NSIS installer + portable `.exe`; macOS → `.dmg`;
-Linux → `.AppImage` + `.deb`.
+`electron-builder` produces the macOS `.dmg`; `ffmpeg-static` / `ffprobe-static` are bundled and
+`asarUnpack`ed (the engine rewrites `app.asar` → `app.asar.unpacked` in the binary path). On-device
+generation uses the Python MLX sidecar (`local/`), installed once by `bash local/setup.sh` as a user-owned
+venv — it is not bundled into the installer. The `renderer/fonts/` Inter woff2 ships in-app, so the UI makes
+no external font request (the CSP stays `'self'`-only).

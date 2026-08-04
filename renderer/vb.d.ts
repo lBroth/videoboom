@@ -15,10 +15,33 @@ export interface Character {
 export interface Scene {
   index: number; status?: string; title?: string; lyric?: string; error?: string;
   startSec?: number; endSec?: number;
+  // authored/editable fields (scene editor)
+  prompt?: string; motion?: string; transition?: 'cut' | 'continue';
+  characters?: string[]; energy?: number; userKeyframe?: boolean;
 }
+export type Stage = 'STT' | 'LLM' | 'VLM' | 'KEYFRAME' | 'VIDEO';
+export type Backend = 'cloud' | 'local';
+export interface StageSelection { mode: 'auto' | 'manual'; backend?: Backend; }
+export interface CloudModels {
+  storyModel: string; llmModel: string; keyframeModel: string;
+  videoModel: string; vlmModel: string; moderationModel: string;
+}
+// The resolver's decision for one stage (from settings:resolved). The renderer renders this — it never
+// re-implements the resolver. `reason` is 'no-key' | 'pinned' | 'preference' | 'default'.
+export interface ResolvedStage { backend: Backend; reason: string; localAvailable: boolean; }
 export interface Settings {
-  storyModel: string; llmModel: string; keyframeModel: string; videoModel: string;
-  vlmModel: string; moderationModel: string; sttLang: string; workers: number;
+  settingsVersion: number;                                     // 3
+  backendPreference: 'auto' | 'prefer-local' | 'prefer-cloud'; // master control
+  stages: Record<Stage, StageSelection>;                       // per-stage auto/pin
+  cloud: CloudModels;                                          // OpenRouter/Replicate slugs (advanced)
+  // ── on-device knobs. Fast = FastWan-5B (DMD 3-step), Quality = Wan 14B (bf16-relay); both finish 1080p.
+  sttLang: string; workers: number;
+  localVideoModel: '5b' | '14b'; localQuality: 'fast' | 'hd'; localWanDir: string;
+  onboarded: boolean;                                         // first-run wizard completed/skipped
+}
+export interface LocalCapabilities {
+  platform: string; arch: string; ramGB: number; isAppleSilicon: boolean;
+  minRamGB: number; recommendedRamGB: number; depsInstalled: boolean; supported: boolean; reason: string;
 }
 export interface SidecarEvent {
   event: string; stage?: string; total?: number; index?: number; status?: string;
@@ -34,21 +57,39 @@ export interface VBApi {
   mediaUrl(key?: string | null): Promise<string | null>;
   dataDir(): Promise<string>;
   deleteProject(pid: string): Promise<boolean>;
+  downloadVideo(pid: string): Promise<string | null>;
   deleteCharacter(cid: string): Promise<boolean>;
   openExternal(url: string): Promise<void>;
-  keysStatus(): Promise<Record<string, boolean>>;
-  setKey(name: string, value: string): Promise<Record<string, boolean>>;
   getSettings(): Promise<Settings>;
   setSettings(patch: Partial<Settings>): Promise<Settings>;
+  resolvedBackends(): Promise<Record<Stage, ResolvedStage>>;
+  keysStatus(): Promise<Record<string, boolean>>;
+  setKey(name: string, value: string): Promise<Record<string, boolean>>;
   pickAudio(): Promise<string | null>;
   pickImage(): Promise<string | null>;
-  createProject(o: { audio: string; name: string; style: string; cast: string; quality: string; mode: string }): Promise<{ projectId: string }>;
+  createProject(o: { audio: string; name: string; style: string; cast: string; quality: string; mode: string; format?: string }): Promise<{ projectId: string }>;
   createCharacter(o: { name: string; style?: string }): Promise<{ characterId: string }>;
   characterPortrait(o: { character: string; photo?: string; prompt?: string }): Promise<Record<string, unknown>>;
-  render(pid: string, preview: boolean): Promise<Record<string, unknown>>;
+  render(pid: string, preview: boolean, regenStory?: boolean): Promise<Record<string, unknown>>;
   resume(pid: string): Promise<Record<string, unknown>>;
+  requality(pid: string): Promise<Record<string, unknown>>;
   regenerateScene(pid: string, index: number): Promise<Record<string, unknown>>;
+  buildStoryboard(pid: string, regenStory?: boolean): Promise<Record<string, unknown>>;
+  renderSelected(pid: string, scenes: number[]): Promise<Record<string, unknown>>;
+  regenerateKeyframe(pid: string, index: number): Promise<Record<string, unknown>>;
+  updateScene(pid: string, index: number, patch: Partial<Scene>): Promise<{ scene: Scene }>;
+  setSceneKeyframe(pid: string, index: number, image: string): Promise<Record<string, unknown>>;
   cancel(opId: string): Promise<boolean>;
+  localCapabilities(): Promise<LocalCapabilities>;
+  engineState(): Promise<'unsupported' | 'not-bootstrapped' | 'partial' | 'ready'>;
+  bootstrapStatus(): Promise<{ pythonReady: boolean; venvReady: boolean; depsReady: boolean; caps: LocalCapabilities }>;
+  startBootstrap(): Promise<void>;
+  cancelBootstrap(): Promise<boolean>;
+  onBootstrap(cb: (e: { event: string; phase?: string; pct?: number; error?: string }) => void): () => void;
+  modelsStatus(): Promise<Record<string, 'ready' | 'absent'>>;
+  downloadModel(stage: string): Promise<void>;
+  cancelDownload(stage: string): Promise<boolean>;
+  onDownload(stage: string, cb: (e: SidecarEvent & { pct?: number; mb?: number }) => void): () => void;
   on(opId: string, cb: (e: SidecarEvent) => void): () => void;
 }
 
