@@ -40,9 +40,20 @@ jobs:
         run: npm run build
 
   # Electron integration: the offline engine self-test (real ffmpeg) + the renderer smoke test.
-  # Headless on Linux via xvfb; exit code is the pass/fail signal (app.exit(0|1)).
+  # Exit code is the pass/fail signal (app.exit(0|1)).
+  #
+  # Runs on all three OSes, not just Linux. Installers are shipped for Windows and Linux, but until now
+  # nothing had ever launched the app there — the matrix job below only typechecks, unit-tests and builds,
+  # which cannot catch a main-process crash, a broken preload bridge or an ffmpeg binary that does not
+  # resolve. On-device generation is Apple-Silicon-only by design (localCapabilities), so what this proves
+  # off macOS is the shell: the app boots, the bridge is up, the renderer mounts, and the bundled
+  # ffmpeg/ffprobe work — which is exactly what a Windows or Linux user on a cloud key depends on.
   electron:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -51,7 +62,12 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      # Only Linux needs a virtual display; macOS and Windows runners have a window server.
       - name: Engine self-test (offline ffmpeg path)
-        run: xvfb-run -a env VB_ENGINE_TEST=1 npx electron --no-sandbox .
+        run: ${{ matrix.os == 'ubuntu-latest' && 'xvfb-run -a ' || '' }}npx electron --no-sandbox .
+        env:
+          VB_ENGINE_TEST: '1'
       - name: Renderer smoke test
-        run: xvfb-run -a env VB_SMOKE=1 npx electron --no-sandbox .
+        run: ${{ matrix.os == 'ubuntu-latest' && 'xvfb-run -a ' || '' }}npx electron --no-sandbox .
+        env:
+          VB_SMOKE: '1'
