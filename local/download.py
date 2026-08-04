@@ -34,10 +34,13 @@ OPTIONAL_REPOS = {
 # convert — a plain snapshot of a ready-to-run MLX repo + a per-engine marker.
 VIDEO_ENGINES = {
     # Fast: FastWan-5B DMD 3-step (published self-contained, ~24GB, fits 32GB unified).
-    "5b": {"repo": "lBroth/FastWan2.2-TI2V-5B-MLX", "name": "FastWan2.2-TI2V-5B-MLX", "marker": ".model-path-5b", "lightning": False},
+    "5b": {"repo": "lBroth/FastWan2.2-TI2V-5B-MLX", "name": "FastWan2.2-TI2V-5B-MLX", "marker": ".model-path-5b", "lightning": False,
+           "required": ["config.json", "t5_encoder.safetensors", "vae.safetensors", "model.safetensors"]},
     # Quality: our own Wan-14B MLX bf16 (~64GB) — relay-shedding loads ONE expert at a time (peak ~32.6GB,
     # fits 48GB), which quantized repos that keep both experts resident (Q4 peaked 67.7GB) do not.
-    "14b": {"repo": "lBroth/Wan2.2-I2V-A14B-MLX-bf16", "name": "Wan2.2-I2V-A14B-MLX-bf16", "marker": ".model-path", "lightning": True},
+    "14b": {"repo": "lBroth/Wan2.2-I2V-A14B-MLX-bf16", "name": "Wan2.2-I2V-A14B-MLX-bf16", "marker": ".model-path", "lightning": True,
+            "required": ["config.json", "t5_encoder.safetensors", "vae.safetensors",
+                         "high_noise_model.safetensors", "low_noise_model.safetensors"]},
 }
 
 
@@ -63,11 +66,22 @@ def download_video() -> None:
     spec = VIDEO_ENGINES.get(engine, VIDEO_ENGINES["5b"])
     dest = os.path.join(models_dir, spec["name"])
     marker = os.path.join(marker_dir, spec["marker"])
-    sentinel = os.path.join(dest, "t5_encoder.safetensors")  # written with the model → complete
+    # Every weight the engine opens, not a sentinel pair. A sentinel made an interrupted fetch
+    # UNRECOVERABLE: a DNS drop mid-snapshot (observed 2026-08-03) left the small files — config.json and
+    # t5_encoder — and neither 28.6GB expert, and because those two exist the next Download click skipped
+    # the snapshot, rewrote the marker and reported success in under a second. The 57GB that were actually
+    # missing could never be fetched from the UI again. snapshot_download resumes and is a cheap etag
+    # check when everything is present, so re-running it on an incomplete dir is the correct behavior.
+    required = [os.path.join(dest, f) for f in spec["required"]]
 
-    if not (os.path.exists(sentinel) and os.path.exists(os.path.join(dest, "config.json"))):
+    if not all(os.path.exists(f) for f in required):
         emit({"event": "progress", "pct": 1, "repo": spec["repo"]})
         snapshot_download(spec["repo"], local_dir=dest)
+    # The marker is what readiness resolves, so it must never point at a partial dir.
+    missing = [os.path.basename(f) for f in required if not os.path.exists(f)]
+    if missing:
+        emit({"event": "error", "error": f"{spec['repo']}: incomplete download, missing {', '.join(missing)}"})
+        raise SystemExit(1)
     with open(marker, "w") as fh:
         fh.write(dest)
 

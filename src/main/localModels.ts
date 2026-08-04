@@ -42,11 +42,17 @@ function videoReady(): boolean {
   // it into the RENDER spawn env, never into main's own environment, so a user pointing at an existing
   // weights folder (external SSD, another checkout) stayed blocked at "absent" with no way to unblock.
   const override = (is5b ? process.env.VB_LOCAL_WAN_5B_DIR : process.env.VB_LOCAL_WAN_DIR) || s.localWanDir;
-  // Both shipped repos carry a real t5_encoder written with the model, so its presence = a complete download.
-  const sentinel = 't5_encoder.safetensors';
+  // The DiT weights, not just t5_encoder. A single sentinel was not enough, and the failure is not
+  // hypothetical: an interrupted 69GB fetch (DNS drop mid-snapshot, observed 2026-08-03) left the small
+  // files on disk — t5_encoder 11.4GB, vae 0.5GB — and neither 28.6GB expert. The marker from an earlier
+  // successful download was still there, so the stage reported "ready" against a model that cannot run.
+  // These are the files the engine actually opens, so their presence is what "ready" has to mean.
+  const required = is5b
+    ? ['t5_encoder.safetensors', 'vae.safetensors', 'model.safetensors']
+    : ['t5_encoder.safetensors', 'vae.safetensors', 'high_noise_model.safetensors', 'low_noise_model.safetensors'];
   try {
     const dir = (override || fs.readFileSync(path.join(markerDir(), marker), 'utf8')).trim();
-    if (!dir || !fs.existsSync(path.join(dir, sentinel))) return false;
+    if (!dir || !required.every((f) => fs.existsSync(path.join(dir, f)))) return false;
   } catch {
     return false;
   }
