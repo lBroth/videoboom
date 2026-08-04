@@ -115,8 +115,22 @@ export async function genVideoLocal(img: string, prompt: string, outMp4: string,
     //
     // Since only a 4-step I2V distillation exists (lightx2v ships no 8-step for A14B), the honest quality
     // ladder on this hardware is: same distillation, a couple more steps, and the official decoder.
-    //   fast = 4 steps + tiny VAE      -> 132 s per sub-clip  (~29 min for 30s of video)
-    //   hd   = 6 steps + official VAE  -> 246 s per sub-clip  (~53 min for 30s of video)
+    //
+    // MEASURED on M5 Pro 48GB, 832x480, same keyframe/prompt/seed (local/ab_tiers.py, 2026-08-04).
+    // Detail = mean Laplacian variance over 5 frames of the first sub-clip:
+    //   fast   4 steps + tiny VAE       131 s/sub-clip   28.4 min per 30s   detail 132.6
+    //          4 steps + official VAE   149 s/sub-clip   31.3 min per 30s   detail 150.0  (+13.2%)
+    //   hd     6 steps + official VAE   200 s/sub-clip   41.5 min per 30s   detail 166.2  (+25.3%)
+    //
+    // The control arm matters: it splits the win roughly in half, +13.2% from the decoder and +10.8%
+    // from the two extra steps, so neither is free-riding. But the marginal returns are very different —
+    // the decoder buys 13.2% for 10% more time, the last two steps buy 10.8% for 33% more time, about
+    // four times worse per unit of detail. If hd ever needs to be cheaper, drop the steps and keep the
+    // decoder (31.3 min, +13.2%) rather than the other way round.
+    //
+    // The steady-state step is 24.9 s, not the 27.5 s these tiers were first planned against: the old
+    // figure was a 4-sample mean that folded in the cold first step AND the relay's expert swap, each of
+    // which costs ~5 s extra on its first step (see the per-step series in relay_generate.py).
     const ln = lightningLoras();
     if (ln) {
       payload.lora_high = ln.high;

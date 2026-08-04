@@ -38,6 +38,10 @@ TIERS = {
     # steps, tiny_vae, label
     "fast": (4, 1, "Lightning 4-step + tiny VAE (TAEHV)"),
     "quality": (6, 0, "Lightning 6-step + official Wan VAE"),
+    # The control arm. fast->quality changes the step count AND the decoder at once, so a quality win
+    # cannot be attributed. This isolates the decoder: if it matches 'quality', the extra two steps buy
+    # nothing and Quality should run at 4.
+    "vaeonly": (4, 0, "Lightning 4-step + official Wan VAE (isolates the decoder)"),
 }
 
 
@@ -144,7 +148,8 @@ def main() -> None:
     ap.add_argument("--width", type=int, default=832)
     ap.add_argument("--height", type=int, default=480)
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--tier", choices=["fast", "quality", "both"], default="both")
+    # Derived from TIERS so adding an arm cannot silently fail at the CLI boundary.
+    ap.add_argument("--tier", choices=[*TIERS, "both"], default="both")
     ap.add_argument("--outdir", default=os.path.join(HERE, "..", "ab_out"))
     ap.add_argument("--deadline", type=int, default=3600)
     args = ap.parse_args()
