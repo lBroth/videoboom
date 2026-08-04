@@ -74,7 +74,7 @@ generation needs one of:
 | **Apple Silicon — MLX / Metal** | M-series Mac · **48 GB+ unified memory** (64 GB recommended — measured on-device peaks: Wan-14B bf16-relay ~33 GB, FastWan-5B ~55 GB) | ✅ shipping |
 | **NVIDIA — CUDA** | driver ≥ 570 · **8 GB+ VRAM** · compute capability ≥ 8.6 · Windows / Linux | 🚧 on the roadmap |
 
-Plus **~50 GB free disk** for the model weights (downloaded once). The app detects your machine, picks the
+Plus **~100 GB free disk** for the model weights (downloaded once): the Wan-14B video engine is ~69 GB on its own, the Lightning LoRA ~2.5 GB, and the STT / LLM / VLM / keyframe stages another ~28 GB between them. The app detects your machine, picks the
 right models and quantization for it, and gates local generation until you meet the bar. No supported GPU?
 You can still generate by opting individual stages into cloud with your own key — but on-device stays the
 default.
@@ -85,7 +85,7 @@ default.
 npm install
 npm run dev
 
-# one-time: install the on-device model sidecar (Python venv + MLX) and download/convert the Wan video model
+# one-time: install the on-device model sidecar (Python venv + MLX) and fetch the Wan video model
 bash local/setup.sh
 ```
 The remaining stage models (STT / LLM / VLM / keyframes) download from **Settings → On-device → Download**.

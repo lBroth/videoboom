@@ -335,6 +335,13 @@ function VideoCard({ p }: { p: Project }) {
             {run.cost != null && run.cost > 0 && <CostPill cents={run.cost} />}
           </div>
         )}
+        {/* Delete stays outside the `active` gate. A project stuck in an in-progress status used to hide
+            every button behind it, including this one, leaving no way to remove it from the app at all. */}
+        {active && (
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="ghost" icon={Trash2} onClick={del}>Delete</Button>
+          </div>
+        )}
         {!active && (
           <div className="flex flex-wrap gap-2">
             {canResume && <Button size="sm" variant="primary" icon={Plus} onClick={() => startResume(p.id)}>Finish full song</Button>}
@@ -559,7 +566,7 @@ const MODEL_FIELDS: { key: keyof CloudModels; label: string }[] = [
 // x64 VAE deformed people).
 const VIDEO_MODES: { key: 'fast' | 'hd'; title: string; sub: string }[] = [
   { key: 'fast', title: 'Fast', sub: 'Wan 14B · Lightning 4-step + tiny-VAE · ~2 min/clip' },
-  { key: 'hd', title: 'Quality', sub: 'Wan 14B · full 40-step · max detail · slow (master)' },
+  { key: 'hd', title: 'Quality', sub: 'Wan 14B · 6-step + official VAE · +25% detail · ~1.5x slower' },
 ];
 
 // Cost estimate pill — cloud-only. An all-local render never emits costCents, so this is simply never shown.

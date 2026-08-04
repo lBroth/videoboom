@@ -17,7 +17,7 @@ import { localEnv } from './paths';
 import { CLOUD_HOSTS, hostAllowed } from '../shared/netAllowlist';
 import { modelStatus, downloadModel, localCapabilities, engineState, DownloadRun } from './localModels';
 import { detect as detectBootstrap, install as installBootstrap, cancelBootstrap } from './bootstrap';
-import { getProject, listScenes, listProjects, listCharacters, mediaUrl } from './projects';
+import { getProject, listScenes, listProjects, listCharacters, mediaUrl, reconcileInterruptedProjects } from './projects';
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5273';
 let win: BrowserWindow | null = null;
@@ -404,6 +404,9 @@ app.whenReady().then(async () => {
   }
   if (process.platform === 'darwin' && app.dock && fs.existsSync(ICON)) app.dock.setIcon(ICON);   // dock icon in dev
   setupFirewall();
+  // Any project still marked in-progress is a leftover from a crash or a quit — no run can be live yet.
+  const stale = reconcileInterruptedProjects();
+  if (stale) console.log(`[vb] reconciled ${stale} interrupted project(s) to failed`);
   registerIpc();
   createWindow();
 });

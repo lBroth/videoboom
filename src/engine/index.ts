@@ -4,7 +4,7 @@
 // TypeScript, ffmpeg is the bundled static binary, and all generation is the user's own cloud API calls.
 import { setEnv } from './config';
 import { costReset, costTotal } from './cost';
-import { dataDir, getProject } from './storage';
+import { dataDir, getProject, updateProject } from './storage';
 import * as PL from './pipeline';
 
 export { dataDir };
@@ -40,6 +40,11 @@ function parseFlags(args: string[]): Record<string, string | boolean> {
   return out;
 }
 const str = (v: string | boolean | undefined, d = ''): string => (typeof v === 'string' ? v : d);
+
+// Statuses that mean "a run owns this project right now". Mirrors IN_PROGRESS in renderer/App.tsx, which
+// hides the whole action row — Delete included — while a project is in one of them. The startup sweep that
+// clears them after a crash lives in src/main/projects.ts, next to listProjects.
+export const IN_PROGRESS_STATUS = new Set(['queued', 'storyboarding', 'rendering', 'refresh']);
 
 async function dispatch(command: string, f: Record<string, string | boolean>, emit: PL.Emit, cancelled: PL.Cancelled): Promise<Record<string, unknown>> {
   switch (command) {
@@ -151,6 +156,20 @@ export function runEngine(command: string, args: string[], extraEnv: Record<stri
       return result;
     } catch (err: any) {
       const message = `${err?.name || 'Error'}: ${err?.message ?? err}`;
+      // Land the failure on the project before rethrowing. pipeline.ts writes status:'rendering' when the
+      // clip loop starts and only ever clears it on success, so anything that throws after that — a failed
+      // final mux, a full disk, a sidecar that died — used to leave 'rendering' on disk forever. The card
+      // then reads that status as "busy" and hides every button behind it, Delete included, so the project
+      // became unrecoverable from the UI.
+      const pid = str(f.project);
+      if (pid) {
+        try {
+          const p = getProject(pid);
+          if (p && IN_PROGRESS_STATUS.has(String(p.status))) updateProject(pid, { status: 'failed', error: message });
+        } catch {
+          /* the project may be gone; the original error is what matters */
+        }
+      }
       emit({ event: 'error', message, trace: String(err?.stack || '').slice(-1200) });
       throw new Error(message);
     }
