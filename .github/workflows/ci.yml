@@ -32,6 +32,10 @@ jobs:
         run: npm run typecheck
       - name: Unit tests
         run: npm run test:unit
+      # `npm test` is typecheck + test:unit + check:no-cloud, but CI only ran the first two, so the guard
+      # that keeps cloud calls out of a local-resolved render was never enforced on a PR.
+      - name: No-cloud guard
+        run: npm run check:no-cloud
       - name: Build (main + renderer)
         run: npm run build
 

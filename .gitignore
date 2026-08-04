@@ -5,6 +5,8 @@ node_modules/
 # builds (electron main bundle + renderer + packaged installers)
 dist/
 build/
+# ...except the signing entitlements, which package.json references and codesign needs.
+!build/entitlements.mac.plist
 renderer-dist/
 release/
 *.tsbuildinfo

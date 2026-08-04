@@ -27,6 +27,10 @@ export interface Settings {
   localVideoModel: '5b' | '14b'; // always '14b' now — FastWan-5B retired (x64 VAE deformed people); field kept for schema/back-compat
   localQuality: 'fast' | 'hd';   // the user-facing Fast/Quality: fast = 14B Lightning 4-step + tiny-VAE (~2 min/clip), hd = 14B full 40-step master
   localWanDir: string;      // VB_LOCAL_WAN_DIR — '' = read local/.model-path
+  // Last directory each native picker landed on. Electron 43 made showOpenDialog default to ~/Downloads
+  // and stopped the OS remembering the last-used folder, so without these every pick restarts there.
+  lastAudioDir: string;
+  lastImageDir: string;
   onboarded: boolean;       // first-run wizard completed/skipped
 }
 
@@ -40,6 +44,7 @@ export const DEFAULTS: Settings = {
     vlmModel: 'google/gemma-3-12b-it', moderationModel: 'google/gemini-3.5-flash',
   },
   sttLang: '', workers: 4, localVideoModel: '14b', localQuality: 'fast', localWanDir: '',
+  lastAudioDir: '', lastImageDir: '',
   onboarded: false,
 };
 
@@ -82,6 +87,10 @@ export function migrate(raw: any): Settings {
     localVideoModel: '14b',
     localQuality: raw?.localQuality === 'hd' ? 'hd' : 'fast',
     localWanDir: str(raw?.localWanDir, ''),
+    // migrate() rebuilds a whitelisted object rather than spreading `raw`, so an unlisted key would be
+    // dropped on the next save — these have to be named here to survive.
+    lastAudioDir: str(raw?.lastAudioDir, ''),
+    lastImageDir: str(raw?.lastImageDir, ''),
     onboarded: raw?.onboarded === true,
   };
 }

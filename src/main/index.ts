@@ -282,20 +282,32 @@ function registerIpc() {
   ipcMain.handle('keys:set', (_e, name: string, value: string) => { setKey(name, value); refreshFirewall(); return keyStatus(); });
 
   // ── native pickers ──
-  ipcMain.handle('dialog:openAudio', async () => {
+  // Electron 43 changed showOpenDialog to default `defaultPath` to ~/Downloads, and in doing so stopped
+  // the OS restoring the last-used directory between invocations. Both pickers here open somewhere the
+  // user almost never keeps their files — songs live in a music folder, reference photos in a photos
+  // folder — so we remember the folder ourselves and seed it back.
+  const pick = async (
+    key: 'lastAudioDir' | 'lastImageDir',
+    fallback: Parameters<typeof app.getPath>[0],
+    filters: Electron.FileFilter[],
+  ): Promise<string | null> => {
+    const remembered = getSettings()[key];
     const r = await dialog.showOpenDialog(win!, {
       properties: ['openFile'],
-      filters: [{ name: 'Audio', extensions: ['mp3', 'm4a', 'wav', 'aac', 'flac', 'ogg'] }],
+      filters,
+      defaultPath: remembered && fs.existsSync(remembered) ? remembered : app.getPath(fallback),
     });
-    return r.canceled ? null : r.filePaths[0];
-  });
-  ipcMain.handle('dialog:openImage', async () => {
-    const r = await dialog.showOpenDialog(win!, {
-      properties: ['openFile'],
-      filters: [{ name: 'Image', extensions: ['png', 'jpg', 'jpeg', 'heic', 'webp'] }],
-    });
-    return r.canceled ? null : r.filePaths[0];
-  });
+    if (r.canceled || !r.filePaths[0]) return null;
+    setSettings({ [key]: path.dirname(r.filePaths[0]) }); // setSettings already merges onto current
+    return r.filePaths[0];
+  };
+
+  ipcMain.handle('dialog:openAudio', () =>
+    pick('lastAudioDir', 'music', [{ name: 'Audio', extensions: ['mp3', 'm4a', 'wav', 'aac', 'flac', 'ogg'] }]),
+  );
+  ipcMain.handle('dialog:openImage', () =>
+    pick('lastImageDir', 'pictures', [{ name: 'Image', extensions: ['png', 'jpg', 'jpeg', 'heic', 'webp'] }]),
+  );
 
   // ── one-shot sidecar ops (no streaming needed) ──
   ipcMain.handle('project:create', (_e, o: { audio: string; name: string; style: string; cast: string; quality: string; mode: string; format?: string }) =>
