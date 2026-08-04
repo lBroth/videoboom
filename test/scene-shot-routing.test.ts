@@ -4,14 +4,23 @@
 // put the lead in it anyway — and paid the identity model's price (36.7s vs 8.0s measured) to do it.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
-// refsForScene reads character media from the data dir; point it at the checked-in test fixtures.
-process.env.VB_DATA_DIR = path.join(__dirname, '..', '.vbdata-test');
+const LEAD = 'TESTLEAD00000000000000000';
+
+// refsForScene resolves a cast member by checking that `characters/<id>/primary.png` EXISTS under the data
+// dir — it never opens the file, so any bytes will do. This used to point at `.vbdata-test/`, which
+// .gitignore excludes: green in a working copy that happened to have it, red in every fresh clone, in CI
+// and in a git worktree, where the missing file made every ref resolve to zero. Build the fixture instead.
+const DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'vb-shot-routing-'));
+fs.mkdirSync(path.join(DATA, 'characters', LEAD), { recursive: true });
+fs.writeFileSync(path.join(DATA, 'characters', LEAD, 'primary.png'), 'not a real png');
+process.env.VB_DATA_DIR = DATA;
 
 const { refsForScene } = require('../src/engine/backends/sceneShared');
 
-const LEAD = 'AGPPB6ZHAUH2OH32S5DWTWB6SQ'; // .vbdata-test/characters/<id>/primary.png
 const project = { cast: [{ id: LEAD, role: 'lead' }] };
 
 test('environment shot gets NO refs — even when characters is populated', () => {
